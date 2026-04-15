@@ -81,7 +81,6 @@ impl Session {
     /// Refreshes the session title and updated_at from the wire file.
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn refresh(&mut self) {
-        self.title = "Untitled".into();
         self.updated_at = if self.context_file.exists() {
             match tokio::fs::metadata(&self.context_file).await {
                 Ok(m) => m
@@ -95,13 +94,23 @@ impl Session {
             0.0
         };
 
-        if self.state.custom_title.is_some() {
-            self.title = self.state.custom_title.clone().unwrap();
+        if let Some(ref title) = self.state.custom_title {
+            self.title = title.clone();
             return;
         }
 
         // Derive title from first TurnBegin in wire file.
-        // Simplified: full implementation should iterate WireFile records.
+        for record in self.wire_file.records() {
+            if let crate::wire::types::WireMessage::TurnBegin { user_input } = record {
+                self.title = if user_input.len() > 60 {
+                    format!("{}...", &user_input[..57])
+                } else {
+                    user_input
+                };
+                return;
+            }
+        }
+        self.title = "Untitled".into();
     }
 }
 

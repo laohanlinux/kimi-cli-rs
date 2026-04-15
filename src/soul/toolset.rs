@@ -64,31 +64,93 @@ impl KimiToolset {
         self.tools.get(name)
     }
 
+    /// Loads built-in tools by name into the toolset.
+    #[tracing::instrument(level = "debug", skip(self, _deps))]
     pub fn load_tools(
         &mut self,
-        _tools: &[String],
+        tools: &[String],
         _deps: HashMap<String, serde_json::Value>,
     ) -> crate::error::Result<()> {
-        // TODO: implement full tool loading
+        for name in tools {
+            match name.as_str() {
+                "ReadFile" => self.add(Arc::new(crate::tools::file::ReadFile)),
+                "WriteFile" => self.add(Arc::new(crate::tools::file::WriteFile)),
+                "StrReplaceFile" => self.add(Arc::new(crate::tools::file::StrReplaceFile)),
+                "Glob" => self.add(Arc::new(crate::tools::file::Glob)),
+                "Grep" => self.add(Arc::new(crate::tools::file::Grep)),
+                "ReadMediaFile" => self.add(Arc::new(crate::tools::file::ReadMediaFile)),
+                "Shell" => self.add(Arc::new(crate::tools::shell::Shell::default())),
+                "SearchWeb" => self.add(Arc::new(crate::tools::web::SearchWeb)),
+                "FetchURL" => self.add(Arc::new(crate::tools::web::FetchUrl)),
+                "AskUserQuestion" => self.add(Arc::new(crate::tools::ask_user::AskUserQuestion)),
+                "EnterPlanMode" => self.add(Arc::new(crate::tools::plan::EnterPlanMode)),
+                "ExitPlanMode" => self.add(Arc::new(crate::tools::plan::ExitPlanMode)),
+                "Think" => self.add(Arc::new(crate::tools::think::Think)),
+                "SetTodoList" => self.add(Arc::new(crate::tools::todo::SetTodoList)),
+                "SendDMail" => self.add(Arc::new(crate::tools::dmail::SendDMail)),
+                "TaskOutput" => self.add(Arc::new(crate::tools::background::TaskOutput)),
+                "TaskList" => self.add(Arc::new(crate::tools::background::TaskList)),
+                "TaskStop" => self.add(Arc::new(crate::tools::background::TaskStop)),
+                unknown => {
+                    tracing::warn!("Unknown tool requested: {}", unknown);
+                }
+            }
+        }
         Ok(())
     }
 
+    /// Loads MCP tools from the provided server configurations.
+    #[tracing::instrument(level = "debug", skip(self, _runtime))]
     pub async fn load_mcp_tools(
         &mut self,
-        _configs: Vec<crate::config::McpConfig>,
+        configs: Vec<crate::config::McpConfig>,
         _runtime: &crate::soul::agent::Runtime,
         _in_background: bool,
     ) -> crate::error::Result<()> {
-        // TODO: implement MCP tool loading
+        if configs.is_empty() {
+            tracing::debug!("No MCP configs provided, skipping MCP tool loading");
+            return Ok(());
+        }
+        tracing::info!(
+            count = configs.len(),
+            timeout_ms = _runtime.config.mcp.client.tool_call_timeout_ms,
+            "MCP tool loading is not yet fully implemented in the Rust port"
+        );
         Ok(())
     }
 
+    /// Defers MCP tool loading to a background task.
     pub fn defer_mcp_tool_loading(
         &mut self,
-        _configs: Vec<crate::config::McpConfig>,
-        _runtime: &crate::soul::agent::Runtime,
+        configs: Vec<crate::config::McpConfig>,
+        runtime: &crate::soul::agent::Runtime,
     ) {
-        // TODO: implement deferred MCP loading
+        if configs.is_empty() {
+            return;
+        }
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            let mut toolset = KimiToolset::new();
+            if let Err(e) = toolset.load_mcp_tools(configs, &runtime, true).await {
+                tracing::warn!("Deferred MCP tool loading failed: {}", e);
+            }
+        });
+    }
+
+    /// Sets the hook engine on the toolset.
+    pub fn set_hook_engine(&mut self, engine: crate::hooks::engine::HookEngine) {
+        self.hook_engine = Some(engine);
+    }
+
+    /// Starts background MCP tool loading if configs are available.
+    pub fn start_background_mcp_loading(&mut self) -> bool {
+        tracing::debug!("Background MCP loading requested (stub)");
+        false
+    }
+
+    /// Waits for any background MCP tool loading to complete.
+    pub async fn wait_for_background_mcp_loading(&mut self) {
+        // no-op until real MCP client implementation
     }
 
     /// Returns the underlying tool map.

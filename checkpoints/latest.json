@@ -1,5 +1,5 @@
 {
-  "phase": 4,
+  "phase": 5,
   "completed_modules": [
     "analysis",
     "translation_plan",
@@ -29,6 +29,8 @@
     "src/soul/dynamic_injections/plan_mode.rs",
     "src/soul/dynamic_injections/yolo_mode.rs",
     "src/soul/approval.rs",
+    "src/soul/btw.rs",
+    "src/soul/denwa_renji.rs",
     "src/notifications/manager.rs",
     "src/background/manager.rs",
     "src/subagents/store.rs",
@@ -54,6 +56,7 @@
     "src/cli/mod.rs",
     "src/main.rs",
     "src/ui/mod.rs",
+    "src/ui/theme.rs",
     "src/ui/acp/mod.rs",
     "src/ui/print/mod.rs",
     "src/ui/shell/mod.rs",
@@ -65,10 +68,11 @@
     "src/vis/api/mod.rs",
     "src/acp/mod.rs",
     "src/utils/mod.rs",
+    "src/plugin/mod.rs",
     "integration_tests"
   ],
   "in_progress_modules": [],
-  "next_module_group": null,
-  "last_updated": "2026-04-15T04:30:00Z",
-  "notes": "Approval flow, session_fork turn mapping, and LLM-based title generation all implemented. 43 unit + 5 integration tests passing."
+  "next_module_group": "Phase 3: Tools detailed implementation and Phase 4: Wire/Servers polish",
+  "last_updated": "2026-04-15T18:10:00Z",
+  "notes": "Phase 1 Foundation and Phase 2 Soul Core completed. Added load_config_from_string, WireFile::records, Session::refresh title derivation. Fixed KimiSoul hook engine binding to toolset, added KimiToolset MCP loading stubs, and resolved load_agent subagent registration by wrapping LaborMarket in Arc<RwLock>. 58 unit + 5 integration tests passing."
 }

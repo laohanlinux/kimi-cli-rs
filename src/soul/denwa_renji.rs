@@ -6,41 +6,47 @@ pub struct DMail {
 }
 
 /// Time-travel phone booth for reverting context to checkpoints.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct DenwaRenji {
-    pending_dmail: Option<DMail>,
-    n_checkpoints: usize,
+    pending_dmail: std::sync::Mutex<Option<DMail>>,
+    n_checkpoints: std::sync::Mutex<usize>,
+}
+
+impl Clone for DenwaRenji {
+    fn clone(&self) -> Self {
+        Self {
+            pending_dmail: std::sync::Mutex::new(self.pending_dmail.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            n_checkpoints: std::sync::Mutex::new(*self.n_checkpoints.lock().unwrap_or_else(|e| e.into_inner())),
+        }
+    }
 }
 
 impl DenwaRenji {
     /// Sends a D-Mail to revert to a checkpoint.
-    pub fn send_dmail(&mut self,
-        dmail: DMail,
-    ) -> crate::error::Result<()> {
-        if self.pending_dmail.is_some() {
+    pub fn send_dmail(&self, dmail: DMail) -> crate::error::Result<()> {
+        let mut pending = self.pending_dmail.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.is_some() {
             return Err(crate::error::KimiCliError::Generic(
                 "Only one D-Mail can be sent at a time".into(),
             ));
         }
-        if dmail.checkpoint_id >= self.n_checkpoints {
+        let n = *self.n_checkpoints.lock().unwrap_or_else(|e| e.into_inner());
+        if dmail.checkpoint_id >= n {
             return Err(crate::error::KimiCliError::Generic(
                 "There is no checkpoint with the given ID".into(),
             ));
         }
-        self.pending_dmail = Some(dmail);
+        *pending = Some(dmail);
         Ok(())
     }
 
     /// Sets the number of known checkpoints.
-    pub fn set_n_checkpoints(&mut self,
-        n: usize,
-    ) {
-        self.n_checkpoints = n;
+    pub fn set_n_checkpoints(&self, n: usize) {
+        *self.n_checkpoints.lock().unwrap_or_else(|e| e.into_inner()) = n;
     }
 
     /// Fetches and clears any pending D-Mail.
-    pub fn fetch_pending_dmail(&mut self,
-    ) -> Option<DMail> {
-        self.pending_dmail.take()
+    pub fn fetch_pending_dmail(&self) -> Option<DMail> {
+        self.pending_dmail.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }

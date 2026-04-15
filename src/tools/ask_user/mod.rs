@@ -48,8 +48,19 @@ impl crate::soul::toolset::Tool for AskUserQuestion {
     async fn call(
         &self,
         arguments: serde_json::Value,
-        _runtime: &crate::soul::agent::Runtime,
+        runtime: &crate::soul::agent::Runtime,
     ) -> crate::soul::message::ToolReturnValue {
+        if runtime.approval.yolo {
+            return crate::soul::message::ToolReturnValue::Ok {
+                output: serde_json::json!({
+                    "answers": {},
+                    "note": "Running in non-interactive (yolo) mode. Make your own decision."
+                })
+                .to_string(),
+                message: Some("Non-interactive mode, auto-dismissed.".into()),
+            };
+        }
+
         let questions = match arguments.get("questions").and_then(|v| v.as_array()) {
             Some(q) => q,
             None => {
@@ -63,8 +74,22 @@ impl crate::soul::toolset::Tool for AskUserQuestion {
         for q in questions {
             let header = q.get("header").and_then(|v| v.as_str()).unwrap_or("Question");
             let question = q.get("question").and_then(|v| v.as_str()).unwrap_or("");
-            let options = q.get("options").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let mut options = q.get("options").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let multi_select = q.get("multi_select").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            // Auto-append "Other" option if not present.
+            let has_other = options.iter().any(|opt| {
+                opt.get("label")
+                    .and_then(|v| v.as_str())
+                    .map(|l| l.eq_ignore_ascii_case("other"))
+                    .unwrap_or(false)
+            });
+            if !has_other {
+                options.push(serde_json::json!({
+                    "label": "Other",
+                    "description": "Provide a custom answer."
+                }));
+            }
 
             eprintln!("\n [{}] {}", header, question);
             for (i, opt) in options.iter().enumerate() {
@@ -86,10 +111,19 @@ impl crate::soul::toolset::Tool for AskUserQuestion {
                     error: format!("Failed to read input: {e}"),
                 };
             }
-            answers.push(serde_json::json!({
-                "question": question,
-                "answer": input.trim(),
-            }));
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                answers.push(serde_json::json!({
+                    "question": question,
+                    "answer": null,
+                    "note": "User dismissed the question without answering.",
+                }));
+            } else {
+                answers.push(serde_json::json!({
+                    "question": question,
+                    "answer": trimmed,
+                }));
+            }
         }
 
         crate::soul::message::ToolReturnValue::Ok {

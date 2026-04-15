@@ -120,8 +120,8 @@ impl KimiSoul {
     }
 
     pub fn set_hook_engine(&mut self, engine: crate::hooks::engine::HookEngine) {
-        self.hook_engine = engine;
-        // TODO: bind to toolset if it supports hook engine
+        self.hook_engine = engine.clone();
+        self.agent.toolset.set_hook_engine(engine);
     }
 
     pub fn add_injection_provider(&mut self, provider: Box<dyn crate::soul::dynamic_injection::DynamicInjectionProvider>) {
@@ -484,12 +484,11 @@ impl KimiSoul {
         &self.slash_commands
     }
 
-    pub async fn start_background_mcp_loading(&self) -> bool {
-        // TODO: delegate to toolset
-        false
+    pub async fn start_background_mcp_loading(&mut self) -> bool {
+        self.agent.toolset.start_background_mcp_loading()
     }
 
-    pub async fn wait_for_background_mcp_loading(&self) {
-        // TODO: delegate to toolset
+    pub async fn wait_for_background_mcp_loading(&mut self) {
+        self.agent.toolset.wait_for_background_mcp_loading().await;
     }
 }

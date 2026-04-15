@@ -14,6 +14,7 @@ pub struct BackgroundTask {
     pub stderr: Arc<Mutex<String>>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
     pub running: Arc<Mutex<bool>>,
+    child: Arc<Mutex<Option<tokio::process::Child>>>,
 }
 
 impl BackgroundTask {
@@ -26,6 +27,7 @@ impl BackgroundTask {
             stderr: Arc::new(Mutex::new(String::new())),
             exit_code: Arc::new(Mutex::new(None)),
             running: Arc::new(Mutex::new(true)),
+            child: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -50,22 +52,42 @@ impl BackgroundTask {
 #[derive(Debug, Clone, Default)]
 pub struct BackgroundTaskManager {
     tasks: Arc<RwLock<HashMap<String, BackgroundTask>>>,
+    max_running_tasks: Arc<Mutex<usize>>,
 }
 
 impl BackgroundTaskManager {
-    pub fn bind_runtime(&mut self, _runtime: &crate::soul::agent::Runtime) {}
+    /// Binds the runtime configuration to the manager.
+    pub fn bind_runtime(&mut self, runtime: &crate::soul::agent::Runtime) {
+        let max = runtime.config.background.max_running_tasks;
+        *self.max_running_tasks.blocking_lock() = max;
+        tracing::debug!(max_running_tasks = max, "bound runtime to background manager");
+    }
 
-    pub fn copy_for_role(&self, _role: &str) -> Self {
-        self.clone()
+    /// Returns a copy of the manager scoped to the given role.
+    pub fn copy_for_role(&self, role: &str) -> Self {
+        tracing::debug!(role, "copying background task manager for role");
+        Self {
+            tasks: Arc::new(RwLock::new(HashMap::new())),
+            max_running_tasks: self.max_running_tasks.clone(),
+        }
     }
 
     /// Spawns a new background shell command and tracks it.
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn spawn(
         &self,
         command: &str,
         shell_path: &str,
         is_powershell: bool,
     ) -> crate::error::Result<BackgroundTask> {
+        let active = self.list(true).await;
+        let max = *self.max_running_tasks.lock().await;
+        if active.len() >= max {
+            return Err(crate::error::KimiCliError::Generic(format!(
+                "Maximum number of running background tasks ({max}) reached"
+            )));
+        }
+
         let id = format!("bg-{}", uuid::Uuid::new_v4());
         let task = BackgroundTask::new(id.clone(), command.to_string());
 
@@ -82,12 +104,21 @@ impl BackgroundTaskManager {
             .spawn()
             .map_err(|e| crate::error::KimiCliError::Io(e.into()))?;
 
+        *task.child.lock().await = Some(child);
+
         let stdout = task.stdout.clone();
         let stderr = task.stderr.clone();
         let exit_code = task.exit_code.clone();
         let running = task.running.clone();
+        let child_arc = task.child.clone();
 
         tokio::spawn(async move {
+            let mut child = child_arc.lock().await.take();
+            let Some(mut child) = child else {
+                *running.lock().await = false;
+                return;
+            };
+
             let stdout_handle = async {
                 if let Some(sout) = child.stdout.take() {
                     let mut reader = BufReader::new(sout).lines();
@@ -140,11 +171,63 @@ impl BackgroundTaskManager {
     }
 
     /// Stops a running task by killing its process.
+    #[tracing::instrument(level = "debug", skip(self))]
     pub async fn stop(&self, id: &str) -> Option<BackgroundTask> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get(id) {
+            if let Some(mut child) = task.child.lock().await.take() {
+                if let Err(e) = child.kill().await {
+                    tracing::warn!(task_id = %id, "failed to kill background task: {}", e);
+                }
+            }
             *task.running.lock().await = false;
         }
         tasks.remove(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn background_manager_stop_kills_child() {
+        let manager = BackgroundTaskManager::default();
+        *manager.max_running_tasks.lock().await = 5;
+
+        let task = manager
+            .spawn("sleep 10", "/bin/sh", false)
+            .await
+            .expect("spawn should succeed");
+
+        assert!(task.is_running().await, "task should be running after spawn");
+
+        let stopped = manager.stop(&task.id).await;
+        assert!(stopped.is_some(), "stop should return the task");
+
+        // Give the OS a moment to terminate the process.
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        assert!(
+            !task.is_running().await,
+            "task should no longer be running after stop"
+        );
+
+        // Ensure the task is removed from the manager.
+        assert!(manager.get(&task.id).await.is_none(), "task should be removed from manager");
+    }
+
+    #[tokio::test]
+    async fn background_manager_enforces_max_tasks() {
+        let manager = BackgroundTaskManager::default();
+        *manager.max_running_tasks.lock().await = 1;
+
+        let _task1 = manager
+            .spawn("sleep 10", "/bin/sh", false)
+            .await
+            .expect("first spawn should succeed");
+
+        let result = manager.spawn("sleep 10", "/bin/sh", false).await;
+        assert!(result.is_err(), "second spawn should exceed max running tasks");
     }
 }

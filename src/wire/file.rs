@@ -19,4 +19,15 @@ impl WireFile {
             Err(_) => true,
         }
     }
+
+    /// Reads all wire message records from the file.
+    pub fn records(&self) -> Vec<crate::wire::types::WireMessage> {
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(t) => t,
+            Err(_) => return Vec::new(),
+        };
+        text.lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
+    }
 }

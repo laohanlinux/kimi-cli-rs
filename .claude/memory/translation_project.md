@@ -19,20 +19,29 @@ We are translating the entire `kimi-cli` Python project (`/Users/rg/Projects/kim
 **Progress tracking:**
 - Analysis diagrams saved to `/Users/rg/Projects/kimi-cli-rs/analysis/`.
 - Translation plan saved to `/Users/rg/Projects/kimi-cli-rs/translation_plan/`.
-- **Current Phase:** 4 complete — all major module groups have compilable Rust stubs. Core tool implementations filled in. 32 unit tests passing.
-- **Compilation status:** `cargo build` succeeds for both library and binary. `cargo test` passes 32 unit tests.
+- **Current Phase:** 5 complete — all major module groups have compilable Rust stubs. Core tool implementations filled in. Runtime extension stubs implemented.
+- **Compilation status:** `cargo build` succeeds for both library and binary. `cargo test` passes 58 unit tests + 5 integration tests.
 
 **Recently completed (2026-04-15):**
 - Foundation modules: `error`, `constant`, `share`, `config`, `metadata`, `session_state`, `session`, `wire/*`
-- Soul Core: `soul/mod`, `agent`, `context`, `message`, `toolset`, `kimisoul`, `slash`, `compaction`, `dynamic_injection`, `approval`
+  - Added `load_config_from_string` in `src/config.rs` for TOML/JSON inline config parsing
+  - Added `WireFile::records()` in `src/wire/file.rs` to read wire message records
+  - Completed `Session::refresh()` to derive titles from the first `TurnBegin` record
+- Soul Core: `soul/mod`, `agent`, `context`, `message`, `toolset`, `kimisoul`, `slash`, `compaction`, `dynamic_injection`, `approval`, `btw`, `denwa_renji`
+  - Fixed `KimiSoul::set_hook_engine` to bind the hook engine into `KimiToolset`
+  - Added `KimiToolset::start_background_mcp_loading` and `wait_for_background_mcp_loading` stubs
+  - Wrapped `Runtime.labor_market` in `Arc<RwLock<...>>` so `load_agent` can register builtin subagent types
 - LLM + Skill modules + flow diagram stubs
 - Tools: `tools/mod`, `file/*`, `shell`, `web`, `ask_user`, `plan`, `think`, `todo`, `background`, `dmail`
-- UI: `ui/mod`, `acp`, `print`, `shell`
+- UI: `ui/mod`, `acp`, `print`, `shell`, `theme`
 - Servers: `web/mod` (with Axum router), `vis/mod`, `acp/mod`
 - Entrypoint: `app/mod.rs` (`KimiCLI`), `cli/mod.rs` (clap CLI), `main.rs` (tokio main)
 - Utils: `utils/mod.rs`
+- Runtime Extensions: `notifications/manager.rs` (mpsc queue), `approval_runtime/runtime.rs` (wildcard rules), `hooks/engine.rs` (HookDef execution), `auth/oauth.rs` (file-based tokens)
+- Plugin system: `plugin/mod.rs` with TOML manifest parsing, `PluginTool` shell-command wrapper with `{arg}` placeholder substitution, and `load_plugin_tools` directory scanning
+- Background tasks: `background/manager.rs` with `tokio::process::Child` tracking, `spawn` with `max_running_tasks` limit enforcement, and `stop` that kills the child process
 - All missing submodule stubs created so `cargo check` passes with only warnings
-- **Added 32 unit tests** covering `config`, `share`, `metadata`, `session_state`, `tools::extract_key_argument`, `file` helpers, `shell`, and `web`
+- **55 unit tests** covering `config`, `share`, `metadata`, `session_state`, `tools::extract_key_argument`, `file` helpers, `shell`, `web`, `auth::oauth`, `approval_runtime`, `hooks`, `plugin`, `background`
 - **Implemented working tool logic** for:
   - `ReadFile` (with line offsets, tail mode, max lines/bytes, truncation)
   - `WriteFile` (overwrite / append modes)
@@ -44,6 +53,5 @@ We are translating the entire `kimi-cli` Python project (`/Users/rg/Projects/kim
   - `FetchUrl` (HTTP GET via `reqwest`)
 
 **Next up:**
-- TUI shell implementation with `ratatui`
-- Web server full handler implementation
-- Additional integration tests as UI and server logic mature
+- MCP tool loading integration
+- Additional polish and edge-case handling

@@ -144,7 +144,7 @@ pub struct Runtime {
     pub builtin_args: BuiltinSystemPromptArgs,
     pub denwa_renji: crate::soul::denwa_renji::DenwaRenji,
     pub approval: crate::soul::approval::Approval,
-    pub labor_market: crate::subagents::labor_market::LaborMarket,
+    pub labor_market: Arc<tokio::sync::RwLock<crate::subagents::labor_market::LaborMarket>>,
     pub environment: crate::utils::environment::Environment,
     pub notifications: crate::notifications::manager::NotificationManager,
     pub background_tasks: crate::background::manager::BackgroundTaskManager,
@@ -194,7 +194,7 @@ impl Default for Runtime {
             },
             denwa_renji: crate::soul::denwa_renji::DenwaRenji::default(),
             approval: crate::soul::approval::Approval::default(),
-            labor_market: crate::subagents::labor_market::LaborMarket::default(),
+            labor_market: Arc::new(tokio::sync::RwLock::new(crate::subagents::labor_market::LaborMarket::default())),
             environment: crate::utils::environment::Environment {
                 os_kind: "unknown".into(),
                 os_arch: "unknown".into(),
@@ -351,7 +351,7 @@ impl Runtime {
             },
             denwa_renji: crate::soul::denwa_renji::DenwaRenji::default(),
             approval: crate::soul::approval::Approval::default(),
-            labor_market: crate::subagents::labor_market::LaborMarket::default(),
+            labor_market: Arc::new(tokio::sync::RwLock::new(crate::subagents::labor_market::LaborMarket::default())),
             environment,
             notifications: notifications.clone(),
             background_tasks: background_tasks.clone(),
@@ -446,9 +446,16 @@ pub async fn load_agent(
         } else {
             crate::subagents::labor_market::ToolPolicy::inherit()
         };
-        // Note: labor_market would need to be mutable; in the current architecture
-        // this is a limitation of the stub. In real usage Runtime would be wrapped
-        // in Arc<RwLock<...>> for mutable access to labor_market.
+        let type_def = crate::subagents::labor_market::AgentTypeDefinition {
+            name: subagent_name.clone(),
+            description: subagent_spec.description.clone(),
+            agent_file: subagent_spec.path.clone(),
+            when_to_use: builtin_spec.when_to_use.clone(),
+            default_model: builtin_spec.model.clone(),
+            tool_policy,
+            supports_background: false,
+        };
+        runtime.labor_market.write().await.add_builtin_type(type_def);
     }
 
     let mut toolset = crate::soul::toolset::KimiToolset::new();

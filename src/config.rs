@@ -347,6 +347,31 @@ pub fn load_config(path: Option<&Path>) -> crate::error::Result<Config> {
     Ok(config)
 }
 
+/// Loads configuration from a TOML or JSON string.
+#[tracing::instrument(level = "debug")]
+pub fn load_config_from_string(config_string: &str) -> crate::error::Result<Config> {
+    if config_string.trim().is_empty() {
+        return Err(crate::error::KimiCliError::Config(
+            "Configuration text cannot be empty".into(),
+        ));
+    }
+    let mut config: Config = match serde_json::from_str(config_string) {
+        Ok(c) => c,
+        Err(json_err) => match toml::from_str(config_string) {
+            Ok(c) => c,
+            Err(toml_err) => {
+                return Err(crate::error::KimiCliError::Config(format!(
+                    "Invalid configuration text: {json_err}; {toml_err}"
+                )))
+            }
+        },
+    };
+    config.is_from_default_location = false;
+    config.source_file = None;
+    config.validate()?;
+    Ok(config)
+}
+
 /// Saves configuration to the given path, or the default path.
 #[tracing::instrument(skip(config), level = "debug")]
 pub fn save_config(config: &Config, path: Option<&Path>) -> crate::error::Result<()> {
@@ -431,6 +456,54 @@ mod tests {
         assert!(loaded.providers.contains_key("moonshot"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_config_from_string_roundtrip() {
+        let mut cfg = Config::default();
+        cfg.default_model = "kimi".into();
+        cfg.models.insert(
+            "kimi".into(),
+            LlmModel {
+                provider: "moonshot".into(),
+                model: "kimi-k2".into(),
+                max_context_size: 128_000,
+                capabilities: None,
+            },
+        );
+        cfg.providers.insert(
+            "moonshot".into(),
+            LlmProvider {
+                r#type: "openai".into(),
+                base_url: "https://api.moonshot.cn".into(),
+                api_key: SecretString::new("sk-test".into()),
+                env: None,
+                custom_headers: None,
+                oauth: None,
+            },
+        );
+
+        let toml = toml::to_string(&cfg).unwrap();
+        let loaded = load_config_from_string(&toml).unwrap();
+        assert_eq!(loaded.default_model, "kimi");
+        assert!(!loaded.is_from_default_location);
+        assert!(loaded.source_file.is_none());
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let loaded_json = load_config_from_string(&json).unwrap();
+        assert_eq!(loaded_json.default_model, "kimi");
+    }
+
+    #[test]
+    fn load_config_from_string_empty_error() {
+        let err = load_config_from_string("").unwrap_err().to_string();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn load_config_from_string_invalid_error() {
+        let err = load_config_from_string("not valid toml or json").unwrap_err().to_string();
+        assert!(err.contains("Invalid configuration text"));
     }
 
     #[test]

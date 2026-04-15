@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-/// Sends a D-Mail (time-travel message to a past session).
+/// Sends a D-Mail to revert context to a previous checkpoint.
 #[derive(Debug, Clone, Default)]
 pub struct SendDMail;
 
@@ -11,17 +11,17 @@ impl crate::soul::toolset::Tool for SendDMail {
     }
 
     fn description(&self) -> &str {
-        "Send a message to a past session (D-Mail)."
+        "Send a D-Mail to revert context to a previous checkpoint."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "target_session_id": { "type": "string" },
-                "message": { "type": "string" }
+                "checkpoint_id": { "type": "integer", "description": "Checkpoint ID to revert to" },
+                "message": { "type": "string", "description": "Message to record" }
             },
-            "required": ["target_session_id", "message"]
+            "required": ["checkpoint_id", "message"]
         })
     }
 
@@ -30,69 +30,33 @@ impl crate::soul::toolset::Tool for SendDMail {
         arguments: serde_json::Value,
         runtime: &crate::soul::agent::Runtime,
     ) -> crate::soul::message::ToolReturnValue {
-        let target_id = arguments
-            .get("target_session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let checkpoint_id = arguments
+            .get("checkpoint_id")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
         let message = arguments
             .get("message")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if target_id.is_empty() || message.is_empty() {
-            return crate::soul::message::ToolReturnValue::Error {
-                error: "target_session_id and message are required".into(),
-            };
-        }
+            .unwrap_or("")
+            .to_string();
 
-        let metadata = crate::metadata::load_metadata();
-        let mut found = None;
-        for wd in &metadata.work_dirs {
-            let sessions_dir = wd.sessions_dir();
-            let candidate = sessions_dir.join(target_id);
-            if candidate.is_dir() {
-                found = Some(candidate);
-                break;
-            }
-        }
-
-        let Some(target_dir) = found else {
-            return crate::soul::message::ToolReturnValue::Error {
-                error: format!("Target session {target_id} not found"),
-            };
+        let dmail = crate::soul::denwa_renji::DMail {
+            message,
+            checkpoint_id,
         };
 
-        let dmail_path = target_dir.join("dmail.jsonl");
-        let record = serde_json::json!({
-            "from_session_id": runtime.session.id,
-            "message": message,
-            "timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64(),
-        });
-        let line = format!("{}\n", serde_json::to_string(&record).unwrap_or_default());
-        let mut file = match std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&dmail_path)
-        {
-            Ok(f) => f,
-            Err(e) => {
-                return crate::soul::message::ToolReturnValue::Error {
-                    error: format!("Failed to open dmail file: {e}"),
-                };
-            }
-        };
-        use std::io::Write;
-        if let Err(e) = file.write_all(line.as_bytes()) {
-            return crate::soul::message::ToolReturnValue::Error {
-                error: format!("Failed to write dmail: {e}"),
-            };
-        }
-
-        crate::soul::message::ToolReturnValue::Ok {
-            output: format!("D-Mail sent to session {target_id}"),
-            message: None,
+        match runtime.denwa_renji.send_dmail(dmail) {
+            Ok(()) => crate::soul::message::ToolReturnValue::Ok {
+                output: String::new(),
+                message: Some(
+                    "If you see this message, the D-Mail was NOT sent successfully. \
+                     This may be because some other tool that needs approval was rejected."
+                        .into(),
+                ),
+            },
+            Err(e) => crate::soul::message::ToolReturnValue::Error {
+                error: format!("Failed to send D-Mail: {e}"),
+            },
         }
     }
 }
