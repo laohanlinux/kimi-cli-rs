@@ -1,0 +1,2 @@
+- [Kimi CLI Rust Translation Project](translation_project.md) — Converting kimi-cli Python to Rust with tracing
+- [Session Recovery](session_recovery.md) — Checkpointing strategy for abnormal restarts

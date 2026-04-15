@@ -1,0 +1,149 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Main application orchestrator.
+pub struct KimiCLI {
+    soul: crate::soul::kimisoul::KimiSoul,
+    runtime: crate::soul::agent::Runtime,
+    env_overrides: HashMap<String, String>,
+}
+
+impl KimiCLI {
+    /// Factory that bootstraps the full application stack.
+    #[tracing::instrument(level = "info", skip_all)]
+    pub async fn create(
+        session: crate::session::Session,
+        config: Option<crate::config::Config>,
+        model_name: Option<&str>,
+        thinking: Option<bool>,
+        yolo: bool,
+        plan_mode: bool,
+        resumed: bool,
+        agent_file: Option<&Path>,
+        skills_dirs: Option<Vec<PathBuf>>,
+    ) -> crate::error::Result<Self> {
+        let mut config = match config {
+            Some(c) => c,
+            None => crate::config::load_config(None)?,
+        };
+
+        let oauth = crate::auth::oauth::OAuthManager::default();
+
+        let (model, provider) = if let Some(name) = model_name {
+            config
+                .models
+                .get(name)
+                .and_then(|m| config.providers.get(&m.provider).map(|p| (m.clone(), p.clone())))
+        } else if !config.default_model.is_empty() {
+            config
+                .models
+                .get(&config.default_model)
+                .and_then(|m| config.providers.get(&m.provider).map(|p| (m.clone(), p.clone())))
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            (
+                crate::config::LlmModel {
+                    provider: "kimi".into(),
+                    model: "kimi-k2.5".into(),
+                    max_context_size: 128_000,
+                    capabilities: None,
+                },
+                crate::config::LlmProvider {
+                    r#type: "kimi".into(),
+                    base_url: "https://api.moonshot.cn".into(),
+                    api_key: secrecy::SecretString::new("".into()),
+                    env: None,
+                    custom_headers: None,
+                    oauth: None,
+                },
+            )
+        });
+
+        let thinking = thinking.unwrap_or(config.default_thinking);
+        let yolo = yolo || config.default_yolo;
+        let plan_mode = if resumed { plan_mode } else { plan_mode || config.default_plan_mode };
+
+        let llm = crate::llm::create_llm(&provider, &model, Some(thinking), Some(&session.id))
+            .await?;
+
+        let runtime = crate::soul::agent::Runtime::create(
+            config,
+            oauth,
+            llm,
+            session.clone(),
+            yolo,
+            skills_dirs,
+        )
+        .await?;
+
+        let agent = crate::soul::agent::load_agent(
+            agent_file.unwrap_or_else(|| Path::new("AGENTS.md")),
+            &runtime,
+            vec![],
+            false,
+        )
+        .await?;
+
+        let mut context = crate::soul::context::Context::new(session.context_file.clone());
+        context.restore().await?;
+
+        let soul = crate::soul::kimisoul::KimiSoul::new(agent, context, runtime.clone());
+
+        Ok(KimiCLI {
+            soul,
+            runtime,
+            env_overrides: HashMap::new(),
+        })
+    }
+
+    pub fn soul(&self) -> &crate::soul::kimisoul::KimiSoul {
+        &self.soul
+    }
+
+    pub fn session(&self) -> &crate::session::Session {
+        &self.runtime.session
+    }
+
+    /// Runs a single turn and yields wire messages.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn run(
+        &mut self,
+        user_input: Vec<crate::soul::message::ContentPart>,
+    ) -> crate::error::Result<crate::soul::TurnOutcome> {
+        crate::soul::run_soul(
+            &mut self.soul,
+            user_input,
+            |_wire| Box::pin(async {}),
+            tokio::sync::watch::channel(false).1,
+            &self.runtime,
+        )
+        .await
+    }
+
+    /// Runs the interactive shell UI.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn run_shell(&mut self, command: Option<&str>, _prefill_text: Option<&str>) -> crate::error::Result<bool> {
+        if let Some(cmd) = command {
+            let parts = vec![crate::soul::message::ContentPart::Text { text: cmd.to_string() }];
+            let _outcome = self.run(parts).await?;
+            return Ok(true);
+        }
+
+        let mut ui = crate::ui::shell::ShellUi::default();
+        ui.run(self).await?;
+        Ok(true)
+    }
+
+    pub fn shutdown_background_tasks(&self) {
+        let manager = self.runtime.background_tasks.clone();
+        tokio::spawn(async move {
+            let tasks = manager.list(false).await;
+            for task in tasks {
+                let _ = manager.stop(&task.id).await;
+            }
+            tracing::info!("background tasks shut down");
+        });
+    }
+}

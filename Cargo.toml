@@ -1,0 +1,82 @@
+[package]
+name = "kimi-cli-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["Kimi CLI Translators"]
+description = "Rust port of the Kimi CLI agent"
+
+[[bin]]
+name = "kimi-cli-rs"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Error handling
+thiserror = "1"
+color-eyre = "0.6"
+
+# CLI
+clap = { version = "4", features = ["derive", "env", "cargo"] }
+
+# HTTP / Web
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "multipart"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
+tower-http = { version = "0.5", features = ["cors", "compression-full", "trace"] }
+
+# Terminal UI
+ratatui = "0.29"
+crossterm = "0.28"
+ansi_term = "0.12"
+
+# Security / secrets
+secrecy = { version = "0.10", features = ["serde"] }
+
+# Utilities
+once_cell = "1"
+dirs = "6"
+md5 = "0.7"
+dunce = "1"
+glob = "0.3"
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+base64 = "0.22"
+image = "0.25"
+zip = "2"
+pulldown-cmark = "0.12"
+similar = "2"
+notify = "7"
+oauth2 = "4"
+strum = { version = "0.26", features = ["derive"] }
+bytes = "1"
+async-trait = "0.1"
+minijinja = "2"
+
+# Markdown / diff
+diffy = "0.4"
+
+# Archive / compression
+tar = "0.4"
+flate2 = "1"
+
+# Process
+sysinfo = "0.33"
+
+[dev-dependencies]
+tokio-test = "0.4"
+assert_fs = "1"
+predicates = "3"
