@@ -16,8 +16,6 @@ pub struct KimiSoul {
     pending_plan_activation_injection: bool,
     injection_providers: Vec<Box<dyn crate::soul::dynamic_injection::DynamicInjectionProvider>>,
     hook_engine: crate::hooks::engine::HookEngine,
-    #[allow(dead_code)]
-    stop_hook_active: bool,
     slash_commands: Vec<std::sync::Arc<crate::soul::slash::SlashCommand>>,
     slash_command_map: std::collections::HashMap<String, usize>,
 }
@@ -51,7 +49,6 @@ impl KimiSoul {
                 Box::new(crate::soul::dynamic_injections::yolo_mode::YoloModeInjectionProvider),
             ],
             hook_engine: crate::hooks::engine::HookEngine::default(),
-            stop_hook_active: false,
             slash_commands,
             slash_command_map,
         }

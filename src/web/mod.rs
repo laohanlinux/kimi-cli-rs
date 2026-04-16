@@ -17,6 +17,9 @@ impl WebServer {
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn serve(&self) -> crate::error::Result<()> {
         let state = api::WebAppState::default();
+        if let Ok(cwd) = std::env::current_dir() {
+            state.store.write().await.load_sessions(&cwd).await;
+        }
         let app = api::router()
             .with_state(state.clone())
             .route("/", axum::routing::get(|| async { "Kimi CLI Web Server" }));

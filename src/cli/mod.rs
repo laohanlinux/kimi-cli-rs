@@ -82,7 +82,7 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Run the interactive shell (default).
     Shell {
@@ -135,4 +135,203 @@ pub fn strip_session_id_suffix(title: &str, session_id: &str) -> String {
     } else {
         title.to_string()
     }
+}
+
+/// Runs the CLI application.
+pub async fn run(args: &Cli) -> crate::error::Result<()> {
+    let config_path = args.config.as_deref();
+    let config = crate::config::load_config(config_path)?;
+
+    let share_dir = crate::share::get_share_dir()?;
+    let _logs_dir = share_dir.join("logs");
+    std::fs::create_dir_all(&_logs_dir).ok();
+
+    match &args.command {
+        Some(Command::Shell { command }) => {
+            run_shell_mode(args, &config, command.clone()).await
+        }
+        Some(Command::Print { command }) => {
+            run_print_mode(args, &config, command).await
+        }
+        Some(Command::Acp) => {
+            let work_dir = std::env::current_dir()?;
+            let session = match crate::session::continue_(work_dir.clone()).await {
+                Some(s) => s,
+                None => crate::session::create(work_dir.clone(), None, None).await?,
+            };
+            let app = crate::app::KimiCLI::create(
+                session,
+                Some(config.clone()),
+                args.model.as_deref(),
+                Some(args.thinking),
+                args.yolo,
+                args.plan,
+                false,
+                None,
+                Some(args.skills_dirs.clone()),
+            )
+            .await?;
+            app.run_acp().await
+        }
+        Some(Command::Web) => {
+            let server = crate::web::WebServer::new(0);
+            server.serve().await
+        }
+        Some(Command::Vis) => {
+            let server = crate::vis::VisServer::new(0);
+            server.serve().await
+        }
+        Some(Command::Sessions { archived }) => {
+            let work_dir = std::env::current_dir()?;
+            let sessions = crate::session::list(work_dir.clone()).await;
+            for s in sessions {
+                if !archived && s.state.archived {
+                    continue;
+                }
+                let mark = if s.state.archived { "[archived] " } else { "" };
+                println!("{}{} {}", mark, s.id, s.title);
+            }
+            Ok(())
+        }
+        Some(Command::Export { session_id }) => {
+            let work_dir = std::env::current_dir()?;
+            let session = match crate::session::find(work_dir.clone(), session_id).await {
+                Some(s) => s,
+                None => {
+                    eprintln!("Session {} not found", session_id);
+                    std::process::exit(1);
+                }
+            };
+            let export_dir = share_dir.join("exports");
+            std::fs::create_dir_all(&export_dir)?;
+            let export_path = export_dir.join(format!("{session_id}.jsonl"));
+            if session.context_file.exists() {
+                std::fs::copy(&session.context_file, &export_path)?;
+            }
+            println!("Exported session {} to {}", session_id, export_path.display());
+            Ok(())
+        }
+        Some(Command::Import { target }) => {
+            let work_dir = std::env::current_dir()?;
+            let session = match crate::session::continue_(work_dir.clone()).await {
+                Some(s) => s,
+                None => crate::session::create(work_dir.clone(), None, None).await?,
+            };
+            let target_path = std::path::PathBuf::from(target);
+            if !target_path.exists() {
+                eprintln!("Target file {} not found", target_path.display());
+                std::process::exit(1);
+            }
+            let content = tokio::fs::read_to_string(&target_path).await?;
+            let mut file = tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&session.context_file)
+                .await?;
+            use tokio::io::AsyncWriteExt;
+            file.write_all(content.as_bytes()).await?;
+            println!(
+                "Imported {} into session {}",
+                target_path.display(),
+                session.id
+            );
+            Ok(())
+        }
+        Some(Command::Mcp(mcp_cmd)) => {
+            crate::mcp::cli::run(mcp_cmd.clone()).await
+        }
+        None => {
+            run_shell_mode(args, &config, None).await
+        }
+    }
+}
+
+async fn run_shell_mode(
+    args: &Cli,
+    config: &crate::config::Config,
+    command_override: Option<String>,
+) -> crate::error::Result<()> {
+    let work_dir = std::env::current_dir()?;
+    let mut session = match crate::session::continue_(work_dir.clone()).await {
+        Some(s) => s,
+        None => crate::session::create(work_dir.clone(), None, None).await?,
+    };
+    let mut prefill = None::<String>;
+    let mut command_override = command_override;
+    loop {
+        let app = crate::app::KimiCLI::create(
+            session.clone(),
+            Some(config.clone()),
+            args.model.as_deref(),
+            Some(args.thinking),
+            args.yolo,
+            args.plan,
+            false,
+            None,
+            Some(args.skills_dirs.clone()),
+        )
+        .await?;
+        match app
+            .run_shell(command_override.as_deref(), prefill.as_deref())
+            .await?
+        {
+            crate::app::ShellOutcome::Exit => break Ok(()),
+            crate::app::ShellOutcome::Reload {
+                session_id,
+                prefill_text,
+            } => {
+                session = if let Some(id) = session_id {
+                    match crate::session::find(work_dir.clone(), &id).await {
+                        Some(s) => s,
+                        None => crate::session::create(work_dir.clone(), None, None).await?,
+                    }
+                } else {
+                    crate::session::create(work_dir.clone(), None, None).await?
+                };
+                prefill = prefill_text;
+                command_override = None;
+            }
+            crate::app::ShellOutcome::SwitchToWeb { session_id: _ } => {
+                let server = crate::web::WebServer::new(0);
+                server.serve().await?;
+                break Ok(());
+            }
+            crate::app::ShellOutcome::SwitchToVis { session_id: _ } => {
+                let server = crate::vis::VisServer::new(0);
+                server.serve().await?;
+                break Ok(());
+            }
+        }
+    }
+}
+
+async fn run_print_mode(
+    args: &Cli,
+    config: &crate::config::Config,
+    command: &[String],
+) -> crate::error::Result<()> {
+    let work_dir = std::env::current_dir()?;
+    let session = match crate::session::continue_(work_dir.clone()).await {
+        Some(s) => s,
+        None => crate::session::create(work_dir.clone(), None, None).await?,
+    };
+    let mut app = crate::app::KimiCLI::create(
+        session,
+        Some(config.clone()),
+        args.model.as_deref(),
+        Some(args.thinking),
+        args.yolo,
+        args.plan,
+        false,
+        None,
+        Some(args.skills_dirs.clone()),
+    )
+    .await?;
+    let text = command.join(" ");
+    if !text.is_empty() {
+        let parts = vec![crate::soul::message::ContentPart::Text { text }];
+        app.run_print(parts, args.verbose).await?;
+    } else {
+        tracing::warn!("No command provided for print mode");
+    }
+    Ok(())
 }

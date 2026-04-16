@@ -167,19 +167,29 @@ impl crate::soul::toolset::Tool for Agent {
             }
         }
 
-        if run_in_background {
-            return crate::soul::message::ToolReturnValue::Error {
-                error: "Background subagent execution is not yet implemented in the Rust port.".into(),
-            };
-        }
-
         let req = crate::subagents::runner::ForegroundRunRequest {
-            description,
-            prompt,
-            requested_type: subagent_type,
-            model,
-            resume,
+            description: description.clone(),
+            prompt: prompt.clone(),
+            requested_type: subagent_type.clone(),
+            model: model.clone(),
+            resume: resume.clone(),
         };
+
+        if run_in_background {
+            match runtime.background_tasks.create_agent_task(req, runtime.clone(), timeout).await {
+                Ok(task) => {
+                    return crate::soul::message::ToolReturnValue::Ok {
+                        output: format!("Background agent started.\ntask_id: {}", task.id),
+                        message: Some("The agent is running in the background. Use TaskOutput to check progress.".into()),
+                    };
+                }
+                Err(e) => {
+                    return crate::soul::message::ToolReturnValue::Error {
+                        error: format!("Failed to start background agent: {e}"),
+                    };
+                }
+            }
+        }
 
         let runner = crate::subagents::runner::ForegroundSubagentRunner::new(runtime.clone());
 

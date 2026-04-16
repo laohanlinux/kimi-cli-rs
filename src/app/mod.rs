@@ -18,11 +18,15 @@ pub enum ShellOutcome {
 pub struct KimiCLI {
     soul: crate::soul::kimisoul::KimiSoul,
     runtime: crate::soul::agent::Runtime,
-    #[allow(dead_code)]
     env_overrides: HashMap<String, String>,
 }
 
 impl KimiCLI {
+    /// Returns the environment variable overrides.
+    pub fn env_overrides(&self) -> &HashMap<String, String> {
+        &self.env_overrides
+    }
+
     /// Factory that bootstraps the full application stack.
     #[tracing::instrument(level = "info", skip_all)]
     pub async fn create(
@@ -158,8 +162,10 @@ impl KimiCLI {
     pub async fn run_print(
         &mut self,
         user_input: Vec<crate::soul::message::ContentPart>,
+        verbose: bool,
     ) -> crate::error::Result<()> {
-        let outcome = self.run(user_input).await?;
+        let mut ui = crate::ui::print::PrintUi::new(verbose);
+        let outcome = ui.run(self, user_input).await?;
         if let Some(msg) = outcome.final_message {
             let text = msg.extract_text("");
             if !text.is_empty() {
@@ -171,15 +177,15 @@ impl KimiCLI {
 
     /// Runs the ACP server.
     #[tracing::instrument(level = "info", skip(self))]
-    pub async fn run_acp(&mut self) -> crate::error::Result<()> {
-        let server = crate::acp::AcpServer::new(0);
+    pub async fn run_acp(self) -> crate::error::Result<()> {
+        let server = crate::acp::AcpServer::new(0, self.soul, self.runtime);
         server.serve().await
     }
 
     /// Runs the wire stdio server.
     #[tracing::instrument(level = "info", skip(self))]
-    pub async fn run_wire_stdio(&mut self) -> crate::error::Result<()> {
-        let server = crate::wire::server::WireServer::new();
+    pub async fn run_wire_stdio(self) -> crate::error::Result<()> {
+        let server = crate::wire::server::WireServer::new(self.soul, self.runtime);
         server.serve().await
     }
 

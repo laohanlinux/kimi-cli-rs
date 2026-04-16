@@ -74,6 +74,9 @@ impl TurnState {
 pub struct ShellUi {
     history: Vec<HistoryItem>,
     input: String,
+    cursor: usize,
+    input_history: Vec<String>,
+    input_history_index: Option<usize>,
     scroll_offset: u16,
     status: Option<crate::soul::StatusSnapshot>,
     plan_mode: bool,
@@ -231,13 +234,15 @@ impl ShellUi {
             }
             KeyCode::Esc => return Some(crate::app::ShellOutcome::Exit),
             KeyCode::Enter => {
-                let text = self.input.trim().to_string();
+                let text = self.input.trim_end().to_string();
                 if text.is_empty() {
                     return None;
                 }
 
                 if let Some(outcome) = self.handle_shell_slash_command(&text) {
                     self.input.clear();
+                    self.cursor = 0;
+                    self.input_history_index = None;
                     self.scroll_offset = 0;
                     return Some(outcome);
                 }
@@ -246,7 +251,12 @@ impl ShellUi {
                     role: "user",
                     content: text.clone(),
                 });
+                if !self.input_history.contains(&text) {
+                    self.input_history.push(text.clone());
+                }
                 self.input.clear();
+                self.cursor = 0;
+                self.input_history_index = None;
                 self.scroll_offset = 0;
 
                 {
@@ -280,20 +290,106 @@ impl ShellUi {
                 });
                 None
             }
+            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                match c {
+                    'a' => {
+                        self.cursor = 0;
+                    }
+                    'e' => {
+                        self.cursor = self.input.len();
+                    }
+                    'u' => {
+                        self.input.clear();
+                        self.cursor = 0;
+                    }
+                    'k' => {
+                        self.input.truncate(self.cursor);
+                    }
+                    'w' => {
+                        let prev = self.input[..self.cursor]
+                            .trim_end_matches(|c: char| c.is_ascii_whitespace())
+                            .rfind(|c: char| c.is_ascii_whitespace())
+                            .map(|i| i + 1)
+                            .unwrap_or(0);
+                        self.input.replace_range(prev..self.cursor, "");
+                        self.cursor = prev;
+                    }
+                    'l' => {
+                        self.scroll_offset = 0;
+                    }
+                    'c' => {}
+                    _ => {}
+                }
+                None
+            }
             KeyCode::Char(c) => {
-                self.input.push(c);
+                if self.cursor >= self.input.len() {
+                    self.input.push(c);
+                } else {
+                    self.input.insert(self.cursor, c);
+                }
+                self.cursor += 1;
+                self.input_history_index = None;
                 None
             }
             KeyCode::Backspace => {
-                self.input.pop();
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.input.remove(self.cursor);
+                }
+                None
+            }
+            KeyCode::Delete => {
+                if self.cursor < self.input.len() {
+                    self.input.remove(self.cursor);
+                }
+                None
+            }
+            KeyCode::Left => {
+                self.cursor = self.cursor.saturating_sub(1);
+                None
+            }
+            KeyCode::Right => {
+                if self.cursor < self.input.len() {
+                    self.cursor += 1;
+                }
+                None
+            }
+            KeyCode::Home => {
+                self.cursor = 0;
+                None
+            }
+            KeyCode::End => {
+                self.cursor = self.input.len();
                 None
             }
             KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                if !self.input_history.is_empty() {
+                    let idx = self.input_history_index.map(|i| i.saturating_sub(1)).unwrap_or(self.input_history.len() - 1);
+                    if idx < self.input_history.len() {
+                        self.input = self.input_history[idx].clone();
+                        self.cursor = self.input.len();
+                        self.input_history_index = Some(idx);
+                    }
+                } else {
+                    self.scroll_offset = self.scroll_offset.saturating_add(1);
+                }
                 None
             }
             KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                if let Some(idx) = self.input_history_index {
+                    if idx + 1 < self.input_history.len() {
+                        self.input_history_index = Some(idx + 1);
+                        self.input = self.input_history[idx + 1].clone();
+                        self.cursor = self.input.len();
+                    } else {
+                        self.input.clear();
+                        self.cursor = 0;
+                        self.input_history_index = None;
+                    }
+                } else {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                }
                 None
             }
             _ => None,
@@ -636,8 +732,17 @@ impl ShellUi {
 
         // Cursor
         let input_area = chunks[input_idx];
-        let cursor_x = (input_area.x + 2 + self.input.len() as u16).min(input_area.x + input_area.width - 1);
-        let cursor_y = input_area.y + 1;
+        let prefix_len = 2u16; // "> "
+        let avail_width = input_area.width.saturating_sub(2);
+        let cursor_pos = self.cursor as u16;
+        let cursor_line = if avail_width == 0 {
+            0
+        } else {
+            (prefix_len + cursor_pos) / avail_width
+        };
+        let cursor_col = (prefix_len + cursor_pos) % avail_width;
+        let cursor_x = (input_area.x + 1 + cursor_col).min(input_area.x + input_area.width - 1);
+        let cursor_y = (input_area.y + 1 + cursor_line).min(input_area.y + input_area.height - 1);
         frame.set_cursor_position(ratatui::layout::Position::new(cursor_x, cursor_y));
 
         // Modal overlay
@@ -829,5 +934,39 @@ mod tests {
             content: "hello".into(),
         });
         assert_eq!(ui.history.len(), 1);
+    }
+
+    #[test]
+    fn shell_ui_cursor_movement() {
+        let mut ui = ShellUi::default();
+        ui.input = "hello".into();
+        ui.cursor = 5;
+        // Simulate Left
+        ui.cursor = ui.cursor.saturating_sub(1);
+        assert_eq!(ui.cursor, 4);
+        // Simulate Home
+        ui.cursor = 0;
+        assert_eq!(ui.cursor, 0);
+        // Simulate End
+        ui.cursor = ui.input.len();
+        assert_eq!(ui.cursor, 5);
+    }
+
+    #[test]
+    fn shell_ui_input_history_navigation() {
+        let mut ui = ShellUi::default();
+        ui.input_history = vec!["first".into(), "second".into()];
+        // Up loads latest history
+        let idx = ui.input_history_index.unwrap_or(ui.input_history.len() - 1);
+        ui.input = ui.input_history[idx].clone();
+        ui.cursor = ui.input.len();
+        ui.input_history_index = Some(idx);
+        assert_eq!(ui.input, "second");
+        // Another up loads earlier
+        let idx2 = ui.input_history_index.map(|i| i.saturating_sub(1)).unwrap_or(0);
+        ui.input = ui.input_history[idx2].clone();
+        ui.cursor = ui.input.len();
+        ui.input_history_index = Some(idx2);
+        assert_eq!(ui.input, "first");
     }
 }

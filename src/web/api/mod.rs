@@ -157,11 +157,16 @@ async fn list_sessions(
     let archived = query.archived;
 
     let store = state.store.read().await;
-    let sessions: Vec<WebSession> = store
+    let runner = state.runner.read().await;
+    let mut sessions: Vec<WebSession> = store
         .list_paged(limit, offset, q, archived)
         .into_iter()
         .map(|s| WebSession::from(s))
         .collect();
+    drop(store);
+    for ws in &mut sessions {
+        ws.is_running = runner.is_running(&ws.id).await;
+    }
 
     Ok(Json(json!({ "sessions": sessions })))
 }
@@ -651,23 +656,87 @@ async fn get_upload_file(
 #[tracing::instrument(level = "debug", skip(ws))]
 async fn session_stream(
     ws: WebSocketUpgrade,
-    Path(_id): Path<String>,
+    Path(id): Path<String>,
+    State(state): State<WebAppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(handle_socket)
+    ws.on_upgrade(move |socket| handle_socket(socket, id, state))
 }
 
-async fn handle_socket(mut socket: axum::extract::ws::WebSocket) {
+async fn handle_socket(
+    mut socket: axum::extract::ws::WebSocket,
+    id: String,
+    state: WebAppState,
+) {
     use axum::extract::ws::Message;
-    let _ = socket
-        .send(Message::Text(
-            r#"{"type":"SessionNotice","payload":{"text":"WebSocket stream is a stub in the Rust port"}}"#.into(),
-        ))
-        .await;
-    while let Some(Ok(msg)) = socket.recv().await {
-        if let Message::Close(_) = msg {
-            break;
+
+    let session = {
+        let store = state.store.read().await;
+        match store.get(&id).cloned() {
+            Some(s) => s,
+            None => {
+                let _ = socket
+                    .send(Message::Text(
+                        serde_json::json!({
+                            "type": "Notification",
+                            "payload": { "text": format!("Session {} not found", id) }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .await;
+                return;
+            }
+        }
+    };
+
+    let worker = match state.runner.write().await.ensure_worker(&session).await {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = socket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "Notification",
+                        "payload": { "text": format!("Failed to start worker: {e}") }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
+    let input_tx = worker.input_tx.clone();
+    let mut wire_rx = worker.wire_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            Ok(msg) = wire_rx.recv() => {
+                let text = match serde_json::to_string(&msg) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(%e, "failed to serialize wire message for websocket");
+                        continue;
+                    }
+                };
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            Some(Ok(msg)) = socket.recv() => {
+                match msg {
+                    Message::Text(text) => {
+                        let _ = input_tx.send(text);
+                    }
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+            else => break,
         }
     }
+
+    state.runner.write().await.drop_worker(&id).await;
 }
 
 /// Lists known work directories.

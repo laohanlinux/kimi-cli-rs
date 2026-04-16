@@ -14,6 +14,11 @@ pub struct HookEngine {
 }
 
 impl HookEngine {
+    /// Adds a hook definition to the engine.
+    pub fn add_hook(&mut self, hook: crate::config::HookDef) {
+        self.hooks.push(hook);
+    }
+
     /// Creates a hook engine from config definitions.
     pub fn from_defs(hooks: Vec<crate::config::HookDef>) -> Self {
         Self { hooks }

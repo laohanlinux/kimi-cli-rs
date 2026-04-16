@@ -392,6 +392,11 @@ impl KimiToolset {
         self.mcp_servers.clone()
     }
 
+    /// Returns a mutable reference to the hook engine option.
+    pub fn hook_engine_mut(&mut self) -> &mut Option<crate::hooks::engine::HookEngine> {
+        &mut self.hook_engine
+    }
+
     /// Sets the hook engine on the toolset.
     pub fn set_hook_engine(&mut self, engine: crate::hooks::engine::HookEngine) {
         self.hook_engine = Some(engine);

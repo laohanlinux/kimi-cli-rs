@@ -11,6 +11,9 @@ pub struct Environment {
 }
 
 impl Environment {
+    /// Binds the environment to the root wire hub.
+    pub fn bind_root_wire_hub(&self, _root_wire_hub: &crate::wire::root_hub::RootWireHub) {}
+
     /// Detects the current environment.
     #[tracing::instrument(level = "debug")]
     pub async fn detect() -> Self {

@@ -1,8 +1,9 @@
 use axum::{
     routing::get,
-    Json, Router,
+    Router,
 };
-use serde_json::json;
+
+pub mod api;
 
 /// Visualization server for tracing and diagnostics.
 #[derive(Debug, Clone, Default)]
@@ -33,24 +34,10 @@ impl VisServer {
 /// Builds the Vis API router.
 pub fn router() -> Router {
     Router::new()
-        .route("/healthz", get(health))
-        .route("/traces", get(list_traces))
-        .route("/metrics", get(metrics))
-}
-
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
-}
-
-async fn list_traces() -> Json<serde_json::Value> {
-    Json(json!({
-        "traces": []
-    }))
-}
-
-async fn metrics() -> Json<serde_json::Value> {
-    Json(json!({
-        "sessions_total": 0,
-        "background_tasks_running": 0
-    }))
+        .route("/healthz", get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }))
+        .route("/api/sessions", get(api::list_sessions))
+        .route("/api/sessions/:id/wire", get(api::get_wire_events))
+        .route("/traces", get(api::list_traces))
+        .route("/metrics", get(api::metrics))
+        .fallback(api::spa_fallback)
 }

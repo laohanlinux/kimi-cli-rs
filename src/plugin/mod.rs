@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod manager;
+
 /// Returns the default plugins directory path (`~/.kimi/plugins`).
 pub fn get_plugins_dir() -> std::path::PathBuf {
     crate::share::get_share_dir()

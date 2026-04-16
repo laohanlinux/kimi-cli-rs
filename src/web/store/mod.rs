@@ -48,4 +48,13 @@ impl WebStore {
     pub fn remove(&mut self, id: &str) -> Option<crate::session::Session> {
         self.sessions.remove(id)
     }
+
+    /// Loads sessions from disk for the given work directory.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub async fn load_sessions(&mut self, work_dir: &std::path::Path) {
+        let sessions = crate::session::list(work_dir.to_path_buf()).await;
+        for s in sessions {
+            self.sessions.insert(s.id.clone(), s);
+        }
+    }
 }

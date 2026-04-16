@@ -3,12 +3,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub mod glob;
-pub mod grep;
-pub mod read;
-pub mod read_media;
-pub mod replace;
-pub mod write;
+
 
 const MAX_LINES: usize = 1000;
 const MAX_LINE_LENGTH: usize = 2000;
@@ -283,17 +278,19 @@ impl crate::soul::toolset::Tool for ReadFile {
         if ft.kind == "image" || ft.kind == "video" {
             return crate::soul::message::ToolReturnValue::Error {
                 error: format!(
-                    "`{}` is a {} file. Use ReadMediaFile for media.",
+                    "`{}` is a {} file ({}). Use ReadMediaFile for media.",
                     path.display(),
-                    ft.kind
+                    ft.kind,
+                    ft.mime_type
                 ),
             };
         }
         if ft.kind == "unknown" {
             return crate::soul::message::ToolReturnValue::Error {
                 error: format!(
-                    "`{}` seems not readable. Use shell commands or proper tools.",
-                    path.display()
+                    "`{}` seems not readable ({}). Use shell commands or proper tools.",
+                    path.display(),
+                    ft.mime_type
                 ),
             };
         }

@@ -1,32 +1,55 @@
 use axum::{
+    extract::State,
+    response::Json,
     routing::{get, post},
-    Json, Router,
+    Router,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 
 /// Shared ACP application state.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct AcpState {
-    pub sessions: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    pub soul: Arc<Mutex<crate::soul::kimisoul::KimiSoul>>,
+    pub runtime: crate::soul::agent::Runtime,
 }
 
+impl std::fmt::Debug for AcpState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AcpState")
+            .field("runtime", &self.runtime)
+            .finish_non_exhaustive()
+    }
+}
+
+
+
 /// ACP (Agent Control Protocol) server.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AcpServer {
     pub port: u16,
+    state: AcpState,
 }
 
 impl AcpServer {
-    pub fn new(port: u16) -> Self {
-        Self { port }
+    pub fn new(
+        port: u16,
+        soul: crate::soul::kimisoul::KimiSoul,
+        runtime: crate::soul::agent::Runtime,
+    ) -> Self {
+        Self {
+            port,
+            state: AcpState {
+                soul: Arc::new(Mutex::new(soul)),
+                runtime,
+            },
+        }
     }
 
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn serve(&self) -> crate::error::Result<()> {
-        let state = AcpState::default();
-        let app = router().with_state(state);
+        let app = router().with_state(self.state.clone());
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", self.port))
             .await
@@ -46,7 +69,7 @@ pub fn router() -> Router<AcpState> {
         .route("/rpc", post(rpc_handler))
 }
 
-async fn health() -> Json<serde_json::Value> {
+async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
@@ -56,32 +79,146 @@ struct RpcRequest {
     jsonrpc: String,
     method: String,
     #[serde(default)]
-    params: serde_json::Value,
-    id: serde_json::Value,
+    params: Value,
+    id: Option<Value>,
 }
 
 async fn rpc_handler(
+    State(state): State<AcpState>,
     Json(req): Json<RpcRequest>,
-) -> Json<serde_json::Value> {
-    match req.method.as_str() {
-        "initialize" => Json(json!({
-            "jsonrpc": "2.0",
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "serverInfo": { "name": "kimi-cli-rs-acp", "version": "0.1.0" }
+) -> Json<Value> {
+    let result = match req.method.as_str() {
+        "initialize" => handle_initialize(&req).await,
+        "tools/list" => handle_tools_list(&state, &req).await,
+        "tools/call" => handle_tools_call(&state, &req).await,
+        _ => jsonrpc_error(-32601, &format!("Method not found: {}", req.method), req.id),
+    };
+    Json(result)
+}
+
+async fn handle_initialize(req: &RpcRequest) -> Value {
+    jsonrpc_success(
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {}
             },
-            "id": req.id
-        })),
-        "tools/list" => Json(json!({
-            "jsonrpc": "2.0",
-            "result": { "tools": [] },
-            "id": req.id
-        })),
-        _ => Json(json!({
-            "jsonrpc": "2.0",
-            "error": { "code": -32601, "message": format!("Method not found: {}", req.method) },
-            "id": req.id
-        })),
+            "serverInfo": {
+                "name": "kimi-cli-rs-acp",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }),
+        req.id.clone(),
+    )
+}
+
+async fn handle_tools_list(state: &AcpState, req: &RpcRequest) -> Value {
+    let soul = state.soul.lock().await;
+    let tools = soul.agent().toolset.tools().await;
+    let tool_items: Vec<Value> = tools
+        .values()
+        .map(|t| {
+            json!({
+                "name": t.name(),
+                "description": t.description(),
+                "inputSchema": t.parameters_schema(),
+            })
+        })
+        .collect();
+    jsonrpc_success(json!({ "tools": tool_items }), req.id.clone())
+}
+
+async fn handle_tools_call(state: &AcpState, req: &RpcRequest) -> Value {
+    let name = req
+        .params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let arguments = req.params.get("arguments").cloned().unwrap_or_default();
+
+    if name.is_empty() {
+        return jsonrpc_error(-32602, "Missing tool name", req.id.clone());
+    }
+
+    let soul = state.soul.lock().await;
+    let tools = soul.agent().toolset.tools().await;
+    let Some(tool) = tools.get(name) else {
+        return jsonrpc_error(-32602, &format!("Tool not found: {}", name), req.id.clone());
+    };
+
+    let result = tool.call(arguments, &state.runtime).await;
+    let (content, is_error) = match result {
+        crate::soul::message::ToolReturnValue::Ok { output, .. } => {
+            (vec![json!({ "type": "text", "text": output })], false)
+        }
+        crate::soul::message::ToolReturnValue::Error { error } => {
+            (vec![json!({ "type": "text", "text": error })], true)
+        }
+        crate::soul::message::ToolReturnValue::Parts { parts } => {
+            let content: Vec<Value> = parts
+                .into_iter()
+                .map(|p| match p {
+                    crate::soul::message::ContentPart::Text { text } => {
+                        json!({ "type": "text", "text": text })
+                    }
+                    crate::soul::message::ContentPart::ImageUrl { url } => {
+                        json!({ "type": "image", "data": url })
+                    }
+                    crate::soul::message::ContentPart::AudioUrl { url } => {
+                        json!({ "type": "audio", "data": url })
+                    }
+                    crate::soul::message::ContentPart::VideoUrl { url } => {
+                        json!({ "type": "video", "data": url })
+                    }
+                    crate::soul::message::ContentPart::Think { thought } => {
+                        json!({ "type": "text", "text": format!("[think] {}", thought) })
+                    }
+                })
+                .collect();
+            (content, false)
+        }
+    };
+
+    jsonrpc_success(
+        json!({
+            "content": content,
+            "isError": is_error,
+        }),
+        req.id.clone(),
+    )
+}
+
+fn jsonrpc_success(result: Value, id: Option<Value>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "result": result,
+        "id": id
+    })
+}
+
+fn jsonrpc_error(code: i32, message: &str, id: Option<Value>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "error": { "code": code, "message": message },
+        "id": id
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jsonrpc_success_format() {
+        let v = jsonrpc_success(json!({"tools": []}), Some(json!(1)));
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["id"], 1);
+    }
+
+    #[test]
+    fn jsonrpc_error_format() {
+        let v = jsonrpc_error(-32601, "not found", Some(json!(2)));
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["error"]["code"], -32601);
     }
 }

@@ -482,11 +482,18 @@ pub async fn load_agent(
         toolset.add(Arc::new(crate::tools::agent::Agent::new(runtime.clone()))).await;
     }
 
-    let plugin_tools = crate::plugin::load_plugin_tools(
-        &crate::plugin::get_plugins_dir(),
-        &runtime.config,
-        &runtime.approval,
-    );
+    let mut plugin_manager = crate::plugin::manager::PluginManager::default();
+    let plugin_tools = plugin_manager.load(&runtime.config, &runtime.approval);
+    for result in plugin_manager.load_results() {
+        if let Some(ref err) = result.error {
+            tracing::warn!(
+                plugin = %result.plugin_name,
+                path = %result.manifest_path.display(),
+                "failed to load plugin: {}",
+                err
+            );
+        }
+    }
     for plugin_tool in plugin_tools {
         if toolset.find(&plugin_tool.name()).await.is_some() {
             tracing::warn!(
@@ -496,6 +503,18 @@ pub async fn load_agent(
             continue;
         }
         toolset.add(plugin_tool).await;
+    }
+
+    // Post-init bindings for wire hub, approval runtime, notifications, environment, and hooks.
+    if let Some(ref hub) = runtime.root_wire_hub {
+        runtime.approval.runtime().bind_root_wire_hub(hub);
+        runtime.notifications.bind_root_wire_hub(hub);
+        runtime.environment.bind_root_wire_hub(hub);
+    }
+    for hook in &runtime.config.hooks {
+        if let Some(engine) = toolset.hook_engine_mut() {
+            engine.add_hook(hook.clone());
+        }
     }
 
     if !mcp_configs.is_empty() {

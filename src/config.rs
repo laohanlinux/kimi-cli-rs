@@ -147,14 +147,24 @@ impl Default for BackgroundConfig {
 pub struct NotificationConfig {
     #[serde(default = "default_claim_stale_after_ms")]
     pub claim_stale_after_ms: usize,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub desktop: bool,
+    #[serde(default)]
+    pub sound: bool,
 }
 
 fn default_claim_stale_after_ms() -> usize { 15_000 }
+fn default_true() -> bool { true }
 
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
             claim_stale_after_ms: default_claim_stale_after_ms(),
+            enabled: default_true(),
+            desktop: false,
+            sound: false,
         }
     }
 }
