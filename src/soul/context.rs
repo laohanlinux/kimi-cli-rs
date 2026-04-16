@@ -137,9 +137,138 @@ impl Context {
         file.write_all(b"\n").await?;
         Ok(())
     }
+
+    /// Returns the next checkpoint ID that will be assigned.
+    pub fn next_checkpoint_id(&self) -> usize {
+        self.next_checkpoint_id
+    }
+
+    /// Reverts the context file and in-memory state to the given checkpoint.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn revert_to_checkpoint(&mut self, checkpoint_id: usize) -> crate::error::Result<()> {
+        if !self.file_backend.exists() {
+            return Ok(());
+        }
+        let text = tokio::fs::read_to_string(&self.file_backend).await?;
+        let mut kept = Vec::new();
+        let mut found = false;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            kept.push(trimmed);
+            if let Ok(record) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if record.get("role").and_then(|v| v.as_str()) == Some("_checkpoint") {
+                    if record.get("id").and_then(|v| v.as_u64()).map(|id| id as usize)
+                        == Some(checkpoint_id)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !found {
+            tracing::warn!("checkpoint {} not found, no revert performed", checkpoint_id);
+            return Ok(());
+        }
+        let truncated = kept.join("\n") + "\n";
+        tokio::fs::write(&self.file_backend, truncated).await?;
+        self.history.clear();
+        self.token_count = 0;
+        self.pending_token_estimate = 0;
+        self.next_checkpoint_id = 0;
+        self.system_prompt = None;
+        self.restore().await?;
+        tracing::info!("reverted context to checkpoint {}", checkpoint_id);
+        Ok(())
+    }
 }
 
 /// Naive token estimator for English text (~4 chars/token).
 fn estimate_text_tokens(text: &str) -> usize {
     text.len().div_ceil(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn checkpoint_increments_id() {
+        let tmp = std::env::temp_dir().join(format!("kimi-context-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut ctx = Context::new(tmp.join("context.jsonl"));
+        assert_eq!(ctx.next_checkpoint_id(), 0);
+        ctx.checkpoint().await.unwrap();
+        assert_eq!(ctx.next_checkpoint_id(), 1);
+        ctx.checkpoint().await.unwrap();
+        assert_eq!(ctx.next_checkpoint_id(), 2);
+    }
+
+    #[tokio::test]
+    async fn revert_to_checkpoint_truncates_file() {
+        let tmp = std::env::temp_dir().join(format!("kimi-context-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("context.jsonl");
+        let mut ctx = Context::new(path.clone());
+
+        let msg1 = Message {
+            role: "user".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text: "hello".into() }],
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        ctx.append_message(&msg1).await.unwrap();
+        ctx.checkpoint().await.unwrap();
+
+        let msg2 = Message {
+            role: "assistant".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text: "world".into() }],
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        ctx.append_message(&msg2).await.unwrap();
+        ctx.checkpoint().await.unwrap();
+
+        let msg3 = Message {
+            role: "user".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text: "after".into() }],
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        ctx.append_message(&msg3).await.unwrap();
+
+        assert_eq!(ctx.history().len(), 3);
+        assert_eq!(ctx.next_checkpoint_id(), 2);
+
+        ctx.revert_to_checkpoint(0).await.unwrap();
+
+        // After revert to checkpoint 0, only msg1 and the first checkpoint should remain.
+        assert_eq!(ctx.history().len(), 1);
+        assert_eq!(ctx.next_checkpoint_id(), 1);
+        let text = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(text.contains("hello"));
+        assert!(!text.contains("world"));
+        assert!(!text.contains("after"));
+    }
+
+    #[tokio::test]
+    async fn revert_to_missing_checkpoint_is_noop() {
+        let tmp = std::env::temp_dir().join(format!("kimi-context-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut ctx = Context::new(tmp.join("context.jsonl"));
+
+        let msg = Message {
+            role: "user".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text: "hi".into() }],
+            tool_calls: None,
+            tool_call_id: None,
+        };
+        ctx.append_message(&msg).await.unwrap();
+
+        ctx.revert_to_checkpoint(99).await.unwrap();
+        assert_eq!(ctx.history().len(), 1);
+    }
 }

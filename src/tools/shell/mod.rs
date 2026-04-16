@@ -127,7 +127,7 @@ impl crate::soul::toolset::Tool for Shell {
         let stderr = child.stderr.take().expect("stderr piped");
 
         let stdout_handle = tokio::spawn(async move {
-            let mut buf = tokio::io::BufReader::new(stdout);
+            let buf = tokio::io::BufReader::new(stdout);
             let mut out = String::new();
             use tokio::io::AsyncBufReadExt;
             let mut lines = buf.lines();
@@ -139,7 +139,7 @@ impl crate::soul::toolset::Tool for Shell {
         });
 
         let stderr_handle = tokio::spawn(async move {
-            let mut buf = tokio::io::BufReader::new(stderr);
+            let buf = tokio::io::BufReader::new(stderr);
             let mut out = String::new();
             use tokio::io::AsyncBufReadExt;
             let mut lines = buf.lines();

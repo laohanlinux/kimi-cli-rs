@@ -1,5 +1,4 @@
 use regex::Regex;
-use std::collections::HashMap;
 
 /// Action returned by a hook trigger.
 #[derive(Debug, Clone)]

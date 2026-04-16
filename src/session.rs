@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 
 /// A single work-directory session.
 #[derive(Debug, Clone)]
@@ -36,20 +37,24 @@ impl Session {
         if !self.wire_file.is_empty() {
             return false;
         }
-        let Ok(text) = std::fs::read_to_string(&self.context_file) else {
-            return true;
+        let text = match std::fs::read_to_string(&self.context_file) {
+            Ok(t) => t,
+            Err(_) => return true,
         };
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            if let Ok(record) = serde_json::from_str::<serde_json::Value>(line) {
-                if let Some(role) = record.get("role").and_then(|v| v.as_str()) {
-                    if !role.starts_with('_') {
-                        return false;
+            match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(record) => {
+                    if let Some(role) = record.get("role").and_then(|v| v.as_str()) {
+                        if !role.starts_with('_') {
+                            return false;
+                        }
                     }
                 }
+                Err(_) => continue,
             }
         }
         true
@@ -86,7 +91,7 @@ impl Session {
                 Ok(m) => m
                     .modified()
                     .ok()
-                    .and_then(|t| t.elapsed().ok().map(|d| d.as_secs_f64()))
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs_f64()))
                     .unwrap_or(0.0),
                 Err(_) => 0.0,
             }
@@ -102,11 +107,7 @@ impl Session {
         // Derive title from first TurnBegin in wire file.
         for record in self.wire_file.records() {
             if let crate::wire::types::WireMessage::TurnBegin { user_input } = record {
-                self.title = if user_input.len() > 60 {
-                    format!("{}...", &user_input[..57])
-                } else {
-                    user_input
-                };
+                self.title = crate::utils::shorten(&user_input, 50);
                 return;
             }
         }
@@ -187,6 +188,8 @@ pub async fn find(work_dir: PathBuf, session_id: &str) -> Option<Session> {
         return None;
     }
 
+    migrate_session_context_file(&work_dir_meta, session_id);
+
     let wire_file = crate::wire::file::WireFile::new(session_dir.join("wire.jsonl"));
     let state = crate::session_state::load_session_state(&session_dir);
     let mut session = Session {
@@ -223,6 +226,7 @@ pub async fn list(work_dir: PathBuf) -> Vec<Session> {
         if !session_dir.is_dir() {
             continue;
         }
+        migrate_session_context_file(&work_dir_meta, &session_id);
         let context_file = session_dir.join("context.jsonl");
         if !context_file.exists() {
             continue;
@@ -250,6 +254,17 @@ pub async fn list(work_dir: PathBuf) -> Vec<Session> {
     sessions
 }
 
+/// Lists sessions across all known work directories.
+pub async fn list_all() -> Vec<Session> {
+    let mut all_sessions = Vec::new();
+    for wd in crate::metadata::load_metadata().work_dirs {
+        let sessions = list(std::path::PathBuf::from(&wd.path)).await;
+        all_sessions.extend(sessions);
+    }
+    all_sessions.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
+    all_sessions
+}
+
 /// Returns the most recent session for a work directory, if any.
 #[tracing::instrument(level = "debug")]
 pub async fn continue_(work_dir: PathBuf) -> Option<Session> {
@@ -258,4 +273,29 @@ pub async fn continue_(work_dir: PathBuf) -> Option<Session> {
     let work_dir_meta = metadata.get_work_dir_meta(&canonical)?;
     let last_id = work_dir_meta.last_session_id.as_ref()?;
     find(work_dir, last_id).await
+}
+
+/// Migrates legacy flat context files into session directories.
+fn migrate_session_context_file(work_dir_meta: &crate::metadata::WorkDirMeta, session_id: &str) {
+    let old_context_file = work_dir_meta.sessions_dir().join(format!("{session_id}.jsonl"));
+    let new_context_file = work_dir_meta.sessions_dir().join(session_id).join("context.jsonl");
+    if old_context_file.exists() && !new_context_file.exists() {
+        if let Some(parent) = new_context_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::rename(&old_context_file, &new_context_file) {
+            tracing::warn!(
+                "Failed to migrate session context file from {} to {}: {}",
+                old_context_file.display(),
+                new_context_file.display(),
+                e
+            );
+        } else {
+            tracing::info!(
+                "Migrated session context file from {} to {}",
+                old_context_file.display(),
+                new_context_file.display()
+            );
+        }
+    }
 }

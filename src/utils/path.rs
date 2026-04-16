@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const LIST_DIR_ROOT_WIDTH: usize = 30;
 const LIST_DIR_CHILD_WIDTH: usize = 10;

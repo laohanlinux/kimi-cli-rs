@@ -32,6 +32,7 @@ pub struct FileOpsWindow;
 #[derive(Debug, Clone)]
 struct FileType {
     kind: &'static str,
+    #[allow(dead_code)]
     mime_type: String,
 }
 

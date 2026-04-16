@@ -321,7 +321,7 @@ impl Runtime {
             let _ = crate::session_state::save_session_state(&*state, &session_dir_for_cb);
         }) as Arc<dyn Fn() + Send + Sync>;
 
-        let approval_state = crate::soul::approval::ApprovalState::new(
+        let _approval_state = crate::soul::approval::ApprovalState::new(
             effective_yolo,
             approval_state_arc.lock().unwrap().auto_approve_actions.clone(),
             Some(on_change),
@@ -334,7 +334,7 @@ impl Runtime {
 
         let mut background_tasks = crate::background::manager::BackgroundTaskManager::default();
 
-        let mut runtime = Runtime {
+        let runtime = Runtime {
             config: config.clone(),
             oauth,
             llm,

@@ -38,23 +38,60 @@ async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
     match args.command {
         Some(kimi_cli_rs::cli::Command::Shell { command }) => {
             let work_dir = std::env::current_dir()?;
-            let session = match kimi_cli_rs::session::continue_(work_dir.clone()).await {
+            let mut session = match kimi_cli_rs::session::continue_(work_dir.clone()).await {
                 Some(s) => s,
                 None => kimi_cli_rs::session::create(work_dir.clone(), None, None).await?,
             };
-            let mut app = kimi_cli_rs::app::KimiCLI::create(
-                session,
-                Some(config),
-                args.model.as_deref(),
-                Some(args.thinking),
-                args.yolo,
-                args.plan,
-                false,
-                None,
-                Some(args.skills_dirs),
-            )
-            .await?;
-            app.run_shell(command.as_deref(), None).await?;
+            let mut prefill = None::<String>;
+            let mut command_override = command.clone();
+            loop {
+                let mut app = kimi_cli_rs::app::KimiCLI::create(
+                    session.clone(),
+                    Some(config.clone()),
+                    args.model.as_deref(),
+                    Some(args.thinking),
+                    args.yolo,
+                    args.plan,
+                    false,
+                    None,
+                    Some(args.skills_dirs.clone()),
+                )
+                .await?;
+                match app
+                    .run_shell(command_override.as_deref(), prefill.as_deref())
+                    .await?
+                {
+                    kimi_cli_rs::app::ShellOutcome::Exit => break,
+                    kimi_cli_rs::app::ShellOutcome::Reload {
+                        session_id,
+                        prefill_text,
+                    } => {
+                        session = if let Some(id) = session_id {
+                            match kimi_cli_rs::session::find(work_dir.clone(), &id).await {
+                                Some(s) => s,
+                                None => {
+                                    kimi_cli_rs::session::create(work_dir.clone(), None, None)
+                                        .await?
+                                }
+                            }
+                        } else {
+                            kimi_cli_rs::session::create(work_dir.clone(), None, None).await?
+                        };
+                        prefill = prefill_text;
+                        command_override = None;
+                    }
+                    kimi_cli_rs::app::ShellOutcome::SwitchToWeb { session_id: _ } => {
+                        let server = kimi_cli_rs::web::WebServer::new(0);
+                        server.serve().await?;
+                        break;
+                    }
+                    kimi_cli_rs::app::ShellOutcome::SwitchToVis { session_id: _ } => {
+                        let server = kimi_cli_rs::vis::VisServer::new(0);
+                        server.serve().await?;
+                        break;
+                    }
+                }
+            }
         }
         Some(kimi_cli_rs::cli::Command::Print { command }) => {
             let work_dir = std::env::current_dir()?;
@@ -152,23 +189,60 @@ async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
         None => {
             // Default to shell mode.
             let work_dir = std::env::current_dir()?;
-            let session = match kimi_cli_rs::session::continue_(work_dir.clone()).await {
+            let mut session = match kimi_cli_rs::session::continue_(work_dir.clone()).await {
                 Some(s) => s,
                 None => kimi_cli_rs::session::create(work_dir.clone(), None, None).await?,
             };
-            let mut app = kimi_cli_rs::app::KimiCLI::create(
-                session,
-                Some(config),
-                args.model.as_deref(),
-                Some(args.thinking),
-                args.yolo,
-                args.plan,
-                false,
-                None,
-                Some(args.skills_dirs),
-            )
-            .await?;
-            app.run_shell(None, None).await?;
+            let mut prefill = None::<String>;
+            let mut command_override: Option<String> = None;
+            loop {
+                let mut app = kimi_cli_rs::app::KimiCLI::create(
+                    session.clone(),
+                    Some(config.clone()),
+                    args.model.as_deref(),
+                    Some(args.thinking),
+                    args.yolo,
+                    args.plan,
+                    false,
+                    None,
+                    Some(args.skills_dirs.clone()),
+                )
+                .await?;
+                match app
+                    .run_shell(command_override.as_deref(), prefill.as_deref())
+                    .await?
+                {
+                    kimi_cli_rs::app::ShellOutcome::Exit => break,
+                    kimi_cli_rs::app::ShellOutcome::Reload {
+                        session_id,
+                        prefill_text,
+                    } => {
+                        session = if let Some(id) = session_id {
+                            match kimi_cli_rs::session::find(work_dir.clone(), &id).await {
+                                Some(s) => s,
+                                None => {
+                                    kimi_cli_rs::session::create(work_dir.clone(), None, None)
+                                        .await?
+                                }
+                            }
+                        } else {
+                            kimi_cli_rs::session::create(work_dir.clone(), None, None).await?
+                        };
+                        prefill = prefill_text;
+                        command_override = None;
+                    }
+                    kimi_cli_rs::app::ShellOutcome::SwitchToWeb { session_id: _ } => {
+                        let server = kimi_cli_rs::web::WebServer::new(0);
+                        server.serve().await?;
+                        break;
+                    }
+                    kimi_cli_rs::app::ShellOutcome::SwitchToVis { session_id: _ } => {
+                        let server = kimi_cli_rs::vis::VisServer::new(0);
+                        server.serve().await?;
+                        break;
+                    }
+                }
+            }
         }
     }
 

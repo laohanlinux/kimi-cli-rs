@@ -16,6 +16,7 @@ pub struct KimiSoul {
     pending_plan_activation_injection: bool,
     injection_providers: Vec<Box<dyn crate::soul::dynamic_injection::DynamicInjectionProvider>>,
     hook_engine: crate::hooks::engine::HookEngine,
+    #[allow(dead_code)]
     stop_hook_active: bool,
     slash_commands: Vec<std::sync::Arc<crate::soul::slash::SlashCommand>>,
     slash_command_map: std::collections::HashMap<String, usize>,
@@ -334,6 +335,10 @@ impl KimiSoul {
         });
 
         self.context.append_message(&user_message).await?;
+        self.context.checkpoint().await?;
+        self.runtime
+            .denwa_renji
+            .set_n_checkpoints(self.context.next_checkpoint_id());
 
         let stop_reason = self.agent_loop().await?;
 
@@ -351,7 +356,25 @@ impl KimiSoul {
         for step_no in 0..max_steps {
             match self.step(step_no).await? {
                 Some(reason) => return Ok(reason),
-                None => continue,
+                None => {
+                    if let Some(dmail) = self.runtime.denwa_renji.fetch_pending_dmail() {
+                        tracing::info!(
+                            checkpoint_id = dmail.checkpoint_id,
+                            "processing D-Mail"
+                        );
+                        self.context
+                            .revert_to_checkpoint(dmail.checkpoint_id)
+                            .await?;
+                        self.publish_wire(crate::wire::types::WireMessage::Notification {
+                            text: format!(
+                                "Reverted to checkpoint {}: {}",
+                                dmail.checkpoint_id, dmail.message
+                            ),
+                        });
+                        return Ok(crate::soul::TurnStopReason::ToolRejected);
+                    }
+                    continue;
+                }
             }
         }
         tracing::warn!("agent_loop reached max_steps ({})", max_steps);
@@ -364,6 +387,12 @@ impl KimiSoul {
         self.publish_wire(crate::wire::types::WireMessage::StepBegin { step_no });
         let _ = self.consume_pending_steers().await;
         let _injections = self.collect_injections().await;
+
+        while let Some(notification) = self.runtime.notifications.try_recv() {
+            self.publish_wire(crate::wire::types::WireMessage::Notification {
+                text: format!("{}: {}", notification.title, notification.body),
+            });
+        }
 
         let Some(ref llm) = self.runtime.llm else {
             let reply = crate::soul::message::Message {
@@ -394,7 +423,47 @@ impl KimiSoul {
                 let mut tool_results = Vec::new();
                 for call in tool_calls {
                     // Approval check when not in YOLO mode.
-                    if !self.runtime.approval.yolo {
+                    let mut approved = self.runtime.approval.yolo;
+
+                    if !approved {
+                        // Evaluate approval runtime rules first.
+                        if let Some(ref ar) = self.runtime.approval_runtime {
+                            match ar.evaluate(&call.name, &call.arguments) {
+                                crate::approval_runtime::runtime::ApprovalDecision::Approve => {
+                                    tracing::info!(tool = %call.name, "auto-approved by approval runtime");
+                                    approved = true;
+                                }
+                                crate::approval_runtime::runtime::ApprovalDecision::Deny { reason } => {
+                                    tracing::info!(tool = %call.name, reason = %reason, "denied by approval runtime");
+                                    let reject_result = crate::soul::message::ToolResult {
+                                        tool_call_id: call.id.clone(),
+                                        return_value: crate::soul::message::ToolReturnValue::Error {
+                                            error: format!("Tool use was denied by approval runtime: {reason}"),
+                                        },
+                                    };
+                                    tool_results.push(reject_result.clone());
+                                    let result_msg = crate::soul::message::Message {
+                                        role: "tool".into(),
+                                        content: vec![crate::soul::message::ContentPart::Text {
+                                            text: match &reject_result.return_value {
+                                                crate::soul::message::ToolReturnValue::Ok { output, .. } => output.clone(),
+                                                crate::soul::message::ToolReturnValue::Error { error } => format!("Error: {error}"),
+                                            },
+                                        }],
+                                        tool_calls: None,
+                                        tool_call_id: Some(reject_result.tool_call_id.clone()),
+                                    };
+                                    self.context.append_message(&result_msg).await?;
+                                    continue;
+                                }
+                                crate::approval_runtime::runtime::ApprovalDecision::RequestUser => {
+                                    // Fall through to wire approval request.
+                                }
+                            }
+                        }
+                    }
+
+                    if !approved {
                         let req_id = uuid::Uuid::new_v4().to_string();
                         self.publish_wire(crate::wire::types::WireMessage::ApprovalRequest {
                             id: req_id.clone(),
@@ -405,7 +474,7 @@ impl KimiSoul {
                             display: None,
                         });
                         // Wait for approval response via the wire pump.
-                        let approved = match tokio::time::timeout(
+                        approved = match tokio::time::timeout(
                             tokio::time::Duration::from_secs(300),
                             self.approval_queue.recv(),
                         )

@@ -80,14 +80,14 @@ mod tests {
 
     #[test]
     fn auto_approve_exact_match() {
-        let mut rt = ApprovalRuntime::default();
+        let rt = ApprovalRuntime::default();
         rt.add_auto_approve_pattern("ReadFile");
         assert_eq!(rt.evaluate("ReadFile", &serde_json::Value::Null), ApprovalDecision::Approve);
     }
 
     #[test]
     fn deny_takes_precedence() {
-        let mut rt = ApprovalRuntime::default();
+        let rt = ApprovalRuntime::default();
         rt.add_auto_approve_pattern("*");
         rt.add_deny_pattern("Shell");
         assert_eq!(
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn wildcard_auto_approve() {
-        let mut rt = ApprovalRuntime::default();
+        let rt = ApprovalRuntime::default();
         rt.add_auto_approve_pattern("Read*");
         assert_eq!(rt.evaluate("ReadFile", &serde_json::Value::Null), ApprovalDecision::Approve);
         assert_eq!(

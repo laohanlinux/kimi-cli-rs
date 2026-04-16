@@ -89,6 +89,7 @@ impl WireSoulSide {
 
 /// Consumer side of the wire channel.
 pub struct WireUISide {
+    #[allow(dead_code)]
     raw_rx: broadcast::Receiver<types::WireMessage>,
     merged_rx: broadcast::Receiver<types::WireMessage>,
     response_tx: mpsc::Sender<types::WireMessage>,

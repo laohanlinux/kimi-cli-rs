@@ -27,7 +27,7 @@ impl ShellUi {
     pub async fn run(
         &mut self,
         cli: &mut crate::app::KimiCLI,
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<crate::app::ShellOutcome> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         crossterm::execute!(
@@ -56,7 +56,7 @@ impl ShellUi {
         &mut self,
         terminal: &mut Terminal<B>,
         cli: &mut crate::app::KimiCLI,
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<crate::app::ShellOutcome> {
         loop {
             terminal.draw(|f| self.draw(f))?;
 
@@ -69,8 +69,8 @@ impl ShellUi {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if self.handle_key(key, cli).await? {
-                    break Ok(());
+                if let Some(outcome) = self.handle_key(key, cli).await? {
+                    break Ok(outcome);
                 }
             } else if let Event::Resize(_, _) = event {
                 // Redraw automatically on next loop iteration
@@ -78,21 +78,33 @@ impl ShellUi {
         }
     }
 
-    /// Handles a key press. Returns `true` if the shell should exit.
+    /// Handles a key press. Returns `Some(outcome)` if the shell should exit.
     async fn handle_key(
         &mut self,
         key: KeyEvent,
         cli: &mut crate::app::KimiCLI,
-    ) -> crate::error::Result<bool> {
+    ) -> crate::error::Result<Option<crate::app::ShellOutcome>> {
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-            KeyCode::Esc => return Ok(true),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(Some(crate::app::ShellOutcome::Exit))
+            }
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(Some(crate::app::ShellOutcome::Exit))
+            }
+            KeyCode::Esc => return Ok(Some(crate::app::ShellOutcome::Exit)),
             KeyCode::Enter => {
                 let text = self.input.trim().to_string();
                 if text.is_empty() {
-                    return Ok(false);
+                    return Ok(None);
                 }
+
+                // Handle control-flow slash commands locally before sending to soul.
+                if let Some(outcome) = self.handle_shell_slash_command(&text, cli) {
+                    self.input.clear();
+                    self.scroll_offset = 0;
+                    return Ok(Some(outcome));
+                }
+
                 self.history.push(HistoryItem {
                     role: "user",
                     content: text.clone(),
@@ -110,26 +122,64 @@ impl ShellUi {
                     role: "assistant",
                     content: reply,
                 });
-                Ok(false)
+                Ok(None)
             }
             KeyCode::Char(c) => {
                 self.input.push(c);
-                Ok(false)
+                Ok(None)
             }
             KeyCode::Backspace => {
                 self.input.pop();
-                Ok(false)
+                Ok(None)
             }
             KeyCode::Up => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
-                Ok(false)
+                Ok(None)
             }
             KeyCode::Down => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                Ok(false)
+                Ok(None)
             }
-            _ => Ok(false),
+            _ => Ok(None),
         }
+    }
+
+    /// Intercepts shell-local slash commands that affect control flow.
+    fn handle_shell_slash_command(
+        &mut self,
+        text: &str,
+        cli: &crate::app::KimiCLI,
+    ) -> Option<crate::app::ShellOutcome> {
+        if let Some(cmd_text) = text.strip_prefix('/') {
+            let parts: Vec<&str> = cmd_text.splitn(2, ' ').collect();
+            match parts[0] {
+                "web" => {
+                    return Some(crate::app::ShellOutcome::SwitchToWeb {
+                        session_id: Some(cli.session().id.clone()),
+                    })
+                }
+                "vis" => {
+                    return Some(crate::app::ShellOutcome::SwitchToVis {
+                        session_id: Some(cli.session().id.clone()),
+                    })
+                }
+                "reload" => {
+                    let prefill = parts.get(1).map(|s| s.to_string());
+                    return Some(crate::app::ShellOutcome::Reload {
+                        session_id: Some(cli.session().id.clone()),
+                        prefill_text: prefill,
+                    });
+                }
+                "new" => {
+                    return Some(crate::app::ShellOutcome::Reload {
+                        session_id: None,
+                        prefill_text: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     fn draw(&self, frame: &mut ratatui::Frame) {

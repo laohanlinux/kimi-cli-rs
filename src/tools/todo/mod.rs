@@ -1,30 +1,11 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 
-/// Todo item status.
+/// A single todo item parameter.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoStatus {
-    Pending,
-    InProgress,
-    Done,
-}
-
-impl Default for TodoStatus {
-    fn default() -> Self {
-        TodoStatus::Pending
-    }
-}
-
-/// A single todo item.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TodoItem {
-    pub id: String,
-    pub content: String,
-    #[serde(default)]
-    pub done: bool,
-    #[serde(default)]
-    pub status: Option<TodoStatus>,
+pub struct Todo {
+    pub title: String,
+    pub status: crate::session_state::TodoStatus,
 }
 
 /// Sets the todo list for the session.
@@ -50,12 +31,10 @@ impl crate::soul::toolset::Tool for SetTodoList {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "id": { "type": "string" },
-                            "content": { "type": "string" },
-                            "done": { "type": "boolean" },
+                            "title": { "type": "string" },
                             "status": { "type": "string", "enum": ["pending", "in_progress", "done"] }
                         },
-                        "required": ["id", "content", "done"]
+                        "required": ["title", "status"]
                     }
                 }
             }
@@ -68,18 +47,20 @@ impl crate::soul::toolset::Tool for SetTodoList {
         runtime: &crate::soul::agent::Runtime,
     ) -> crate::soul::message::ToolReturnValue {
         if let Some(arr) = arguments.get("todos").and_then(|v| v.as_array()) {
-            let mut items = Vec::new();
+            let mut todos = Vec::new();
             for t in arr {
-                let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let content = t.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let done = t.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
-                items.push(crate::session_state::TodoItemState { id, content, done });
+                if let Ok(todo) = serde_json::from_value::<Todo>(t.clone()) {
+                    todos.push(crate::session_state::TodoItemState {
+                        title: todo.title,
+                        status: todo.status,
+                    });
+                }
             }
 
             if runtime.role == "root" {
                 let session_dir = runtime.session.dir();
                 let mut state = crate::session_state::load_session_state(&session_dir);
-                state.todos = items;
+                state.todos = todos;
                 if let Err(e) = crate::session_state::save_session_state(&state, &session_dir) {
                     return crate::soul::message::ToolReturnValue::Error {
                         error: format!("Failed to save session state: {e}"),
@@ -89,7 +70,7 @@ impl crate::soul::toolset::Tool for SetTodoList {
                 if let Some(ref agent_id) = runtime.subagent_id {
                     let state_file = store.instance_dir(agent_id).join("state.json");
                     let mut data = read_subagent_state(&state_file);
-                    data["todos"] = serde_json::to_value(&items).unwrap_or_default();
+                    data["todos"] = serde_json::to_value(&todos).unwrap_or_default();
                     if let Err(e) = write_subagent_state(&state_file, &data) {
                         return crate::soul::message::ToolReturnValue::Error {
                             error: format!("Failed to save subagent state: {e}"),
@@ -139,8 +120,8 @@ impl crate::soul::toolset::Tool for SetTodoList {
             } else {
                 let mut lines = vec!["Current todo list:".to_string()];
                 for t in &items {
-                    let status = if t.done { "done" } else { "pending" };
-                    lines.push(format!("  - [{}] {}", status, t.content));
+                    let status = format!("{:?}", t.status).to_lowercase();
+                    lines.push(format!("- [{}] {}", status, t.title));
                 }
                 crate::soul::message::ToolReturnValue::Ok {
                     output: lines.join("\n"),

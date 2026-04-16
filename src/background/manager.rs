@@ -97,7 +97,7 @@ impl BackgroundTaskManager {
             vec!["-c".into(), command.into()]
         };
 
-        let mut child = Command::new(shell_path)
+        let child = Command::new(shell_path)
             .args(&args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -113,7 +113,7 @@ impl BackgroundTaskManager {
         let child_arc = task.child.clone();
 
         tokio::spawn(async move {
-            let mut child = child_arc.lock().await.take();
+            let child = child_arc.lock().await.take();
             let Some(mut child) = child else {
                 *running.lock().await = false;
                 return;

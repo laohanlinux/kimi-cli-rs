@@ -1,10 +1,24 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Outcome of running the interactive shell.
+#[derive(Debug, Clone)]
+pub enum ShellOutcome {
+    /// User exited normally.
+    Exit,
+    /// Reload with an optional session ID and prefill text.
+    Reload { session_id: Option<String>, prefill_text: Option<String> },
+    /// Switch to the web interface.
+    SwitchToWeb { session_id: Option<String> },
+    /// Switch to the vis interface.
+    SwitchToVis { session_id: Option<String> },
+}
+
 /// Main application orchestrator.
 pub struct KimiCLI {
     soul: crate::soul::kimisoul::KimiSoul,
     runtime: crate::soul::agent::Runtime,
+    #[allow(dead_code)]
     env_overrides: HashMap<String, String>,
 }
 
@@ -22,7 +36,7 @@ impl KimiCLI {
         agent_file: Option<&Path>,
         skills_dirs: Option<Vec<PathBuf>>,
     ) -> crate::error::Result<Self> {
-        let mut config = match config {
+        let config = match config {
             Some(c) => c,
             None => crate::config::load_config(None)?,
         };
@@ -63,7 +77,7 @@ impl KimiCLI {
 
         let thinking = thinking.unwrap_or(config.default_thinking);
         let yolo = yolo || config.default_yolo;
-        let plan_mode = if resumed { plan_mode } else { plan_mode || config.default_plan_mode };
+        let _plan_mode = if resumed { plan_mode } else { plan_mode || config.default_plan_mode };
 
         let llm = crate::llm::create_llm(&provider, &model, Some(thinking), Some(&session.id))
             .await?;
@@ -124,16 +138,20 @@ impl KimiCLI {
 
     /// Runs the interactive shell UI.
     #[tracing::instrument(level = "info", skip(self))]
-    pub async fn run_shell(&mut self, command: Option<&str>, _prefill_text: Option<&str>) -> crate::error::Result<bool> {
+    pub async fn run_shell(
+        &mut self,
+        command: Option<&str>,
+        _prefill_text: Option<&str>,
+    ) -> crate::error::Result<ShellOutcome> {
         if let Some(cmd) = command {
             let parts = vec![crate::soul::message::ContentPart::Text { text: cmd.to_string() }];
             let _outcome = self.run(parts).await?;
-            return Ok(true);
+            return Ok(ShellOutcome::Exit);
         }
 
         let mut ui = crate::ui::shell::ShellUi::default();
-        ui.run(self).await?;
-        Ok(true)
+        let outcome = ui.run(self).await?;
+        Ok(outcome)
     }
 
     pub fn shutdown_background_tasks(&self) {

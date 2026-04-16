@@ -61,6 +61,7 @@ pulldown-cmark = "0.12"
 similar = "2"
 notify = "7"
 oauth2 = "4"
+keyring = "3"
 strum = { version = "0.26", features = ["derive"] }
 bytes = "1"
 async-trait = "0.1"

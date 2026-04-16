@@ -1,5 +1,4 @@
 use secrecy::{ExposeSecret, SecretString};
-use std::path::PathBuf;
 
 /// OAuth credential and token manager.
 #[derive(Debug, Clone, Default)]
@@ -10,7 +9,7 @@ impl OAuthManager {
     ///
     /// Supported storage values:
     /// - `"file"` — reads from `~/.kimi/oauth/{key}.token`
-    /// - `"keyring"` — not yet implemented, returns empty token
+    /// - `"keyring"` — reads from the OS keyring
     /// - any other value — returns empty token
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn get_token(&self, storage: &str, key: &str) -> crate::error::Result<SecretString> {
@@ -24,8 +23,16 @@ impl OAuthManager {
                 Ok(SecretString::new(text.trim().into()))
             }
             "keyring" => {
-                tracing::warn!("keyring storage not yet implemented for key: {}", key);
-                Ok(SecretString::new("".into()))
+                let entry = keyring::Entry::new("kimi-cli-rs", key)
+                    .map_err(|e| crate::error::KimiCliError::Generic(format!("keyring error: {e}")))?;
+                match entry.get_password() {
+                    Ok(token) => Ok(SecretString::new(token.into())),
+                    Err(keyring::Error::NoEntry) => Ok(SecretString::new("".into())),
+                    Err(e) => {
+                        tracing::warn!("keyring get failed for key {}: {}", key, e);
+                        Ok(SecretString::new("".into()))
+                    }
+                }
             }
             _ => {
                 tracing::warn!("unknown oauth storage '{}', returning empty token", storage);
@@ -39,18 +46,34 @@ impl OAuthManager {
         self.get_token(&oauth_ref.storage, &oauth_ref.key).await
     }
 
-    /// Saves a token to file storage.
+    /// Saves a token to the given storage backend.
     #[tracing::instrument(level = "info", skip(self, token))]
     pub async fn save_token(
         &self,
+        storage: &str,
         key: &str,
         token: &SecretString,
     ) -> crate::error::Result<()> {
-        let dir = crate::share::get_share_dir()?.join("oauth");
-        tokio::fs::create_dir_all(&dir).await?;
-        let path = dir.join(format!("{key}.token"));
-        tokio::fs::write(&path, token.expose_secret()).await?;
-        Ok(())
+        match storage {
+            "file" => {
+                let dir = crate::share::get_share_dir()?.join("oauth");
+                tokio::fs::create_dir_all(&dir).await?;
+                let path = dir.join(format!("{key}.token"));
+                tokio::fs::write(&path, token.expose_secret()).await?;
+                Ok(())
+            }
+            "keyring" => {
+                let entry = keyring::Entry::new("kimi-cli-rs", key)
+                    .map_err(|e| crate::error::KimiCliError::Generic(format!("keyring error: {e}")))?;
+                entry
+                    .set_password(token.expose_secret())
+                    .map_err(|e| crate::error::KimiCliError::Generic(format!("keyring set failed: {e}")))?;
+                Ok(())
+            }
+            _ => Err(crate::error::KimiCliError::Generic(
+                format!("unknown oauth storage '{}'", storage)
+            )),
+        }
     }
 }
 
@@ -67,7 +90,7 @@ mod tests {
         let key = format!("test-{}", uuid::Uuid::new_v4());
         let token = SecretString::new("secret-token".into());
 
-        mgr.save_token(&key, &token).await.unwrap();
+        mgr.save_token("file", &key, &token).await.unwrap();
         let loaded = mgr.get_token("file", &key).await.unwrap();
         assert_eq!(loaded.expose_secret(), "secret-token");
 

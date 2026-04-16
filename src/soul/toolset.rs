@@ -23,6 +23,7 @@ pub struct KimiToolset {
     tools: HashMap<String, Arc<dyn Tool>>,
     hidden: HashSet<String>,
     hook_engine: Option<crate::hooks::engine::HookEngine>,
+    deny_all: bool,
 }
 
 impl KimiToolset {
@@ -31,6 +32,17 @@ impl KimiToolset {
             tools: HashMap::new(),
             hidden: HashSet::new(),
             hook_engine: None,
+            deny_all: false,
+        }
+    }
+
+    /// Creates a deny-all wrapper around an existing toolset.
+    pub fn deny_all(source: &Self) -> Self {
+        Self {
+            tools: source.tools.clone(),
+            hidden: source.hidden.clone(),
+            hook_engine: None,
+            deny_all: true,
         }
     }
 }
@@ -165,6 +177,15 @@ impl KimiToolset {
         tool_call: &crate::soul::message::ToolCall,
         runtime: &crate::soul::agent::Runtime,
     ) -> crate::soul::message::ToolResult {
+        if self.deny_all {
+            return crate::soul::message::ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                return_value: crate::soul::message::ToolReturnValue::Error {
+                    error: "Tool calls are disabled for side questions. Answer with text only.".into(),
+                },
+            };
+        }
+
         let Some(tool) = self.tools.get(&tool_call.name) else {
             return crate::soul::message::ToolResult {
                 tool_call_id: tool_call.id.clone(),

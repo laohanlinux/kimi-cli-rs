@@ -72,7 +72,7 @@ pub async fn run_soul(
     soul: &mut crate::soul::kimisoul::KimiSoul,
     user_input: Vec<crate::soul::message::ContentPart>,
     ui_loop_fn: impl FnOnce(crate::wire::Wire) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
-    mut cancel_event: tokio::sync::watch::Receiver<bool>,
+    cancel_event: tokio::sync::watch::Receiver<bool>,
     _runtime: &crate::soul::agent::Runtime,
 ) -> crate::error::Result<TurnOutcome> {
     let wire = crate::wire::Wire::default();

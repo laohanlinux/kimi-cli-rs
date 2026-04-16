@@ -51,6 +51,7 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct RpcRequest {
     jsonrpc: String,
     method: String,
