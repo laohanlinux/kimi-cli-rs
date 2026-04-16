@@ -19,39 +19,52 @@ We are translating the entire `kimi-cli` Python project (`/Users/rg/Projects/kim
 **Progress tracking:**
 - Analysis diagrams saved to `/Users/rg/Projects/kimi-cli-rs/analysis/`.
 - Translation plan saved to `/Users/rg/Projects/kimi-cli-rs/translation_plan/`.
-- **Current Phase:** 5 complete — all major module groups have compilable Rust stubs. Core tool implementations filled in. Runtime extension stubs implemented.
-- **Compilation status:** `cargo build` succeeds for both library and binary. `cargo test` passes 58 unit tests + 5 integration tests.
+- **Current Phase:** 11 — Core systems are feature-complete stubs; remaining large modules are wire server, web API, vis pipeline, rich UI shell, notifications, background store, ACP handlers, plugin manager, and CLI commands.
+- **Compilation status:** `cargo build` succeeds for both library and binary. `cargo test` passes 66 unit tests + 5 integration tests.
 
-**Recently completed (2026-04-15):**
+**Recently completed (2026-04-16):**
+- **Approval System & Message Helpers:**
+  - Full `ApprovalResult`, `ApprovalState`, and `ApprovalRuntime` with create/wait/resolve/cancel lifecycle
+  - `system()`, `system_reminder()`, `is_system_reminder_message()`, `tool_result_to_message()`, `check_message()`
+- **Context & Toolset Improvements:**
+  - `Context::clear()`, batch `append_messages()`, `checkpoint(add_user_message)`, atomic system-prompt prepend, robust JSONL parsing
+  - `CURRENT_TOOL_CALL` task-local context, `unhide()`, rich `PreToolUse`/`PostToolUse` hook data
+- **KimiSoul Core & Slash Commands:**
+  - Auto-compaction, hook events (`UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact`), title generation, steer injection
+  - Wire `StatusUpdate`/text streaming for `/compact`, `/clear`, `/plan`, `/yolo`
+- **Background Tasks:**
+  - Fleshed out `BackgroundTaskManager` with `get_task`, `kill`, `wait`, `read_output`, `resolve_output_path`
+- **Tools Translation:**
+  - `AskUserQuestion` via wire `QuestionRequest`/`QuestionResponse`
+  - `EnterPlanMode` and `ExitPlanMode` with YOLO auto-approve and wire question flows
+  - `TaskList`, `TaskOutput`, `TaskStop` with root checks, approval, block/timeout, and rich output formatting
+- **Wire Protocol:**
+  - Added `ApprovalResponse`, `QuestionResponse`, `HookRequest`, `DisplayBlock` support
+- **Config / Session / Metadata:**
+  - JSON→TOML migration, `Theme` enum, JSON save support
+  - Session create assertion, `.jsonl` legacy detection, detailed exception handling
+  - Metadata kaos-aware `sessions_dir`, atomic JSON writes via `utils::io::atomic_json_write`
+
+**Previously completed:**
 - Foundation modules: `error`, `constant`, `share`, `config`, `metadata`, `session_state`, `session`, `wire/*`
-  - Added `load_config_from_string` in `src/config.rs` for TOML/JSON inline config parsing
-  - Added `WireFile::records()` in `src/wire/file.rs` to read wire message records
-  - Completed `Session::refresh()` to derive titles from the first `TurnBegin` record
 - Soul Core: `soul/mod`, `agent`, `context`, `message`, `toolset`, `kimisoul`, `slash`, `compaction`, `dynamic_injection`, `approval`, `btw`, `denwa_renji`
-  - Fixed `KimiSoul::set_hook_engine` to bind the hook engine into `KimiToolset`
-  - Added `KimiToolset::start_background_mcp_loading` and `wait_for_background_mcp_loading` stubs
-  - Wrapped `Runtime.labor_market` in `Arc<RwLock<...>>` so `load_agent` can register builtin subagent types
 - LLM + Skill modules + flow diagram stubs
 - Tools: `tools/mod`, `file/*`, `shell`, `web`, `ask_user`, `plan`, `think`, `todo`, `background`, `dmail`
 - UI: `ui/mod`, `acp`, `print`, `shell`, `theme`
 - Servers: `web/mod` (with Axum router), `vis/mod`, `acp/mod`
 - Entrypoint: `app/mod.rs` (`KimiCLI`), `cli/mod.rs` (clap CLI), `main.rs` (tokio main)
-- Utils: `utils/mod.rs`
-- Runtime Extensions: `notifications/manager.rs` (mpsc queue), `approval_runtime/runtime.rs` (wildcard rules), `hooks/engine.rs` (HookDef execution), `auth/oauth.rs` (file-based tokens)
-- Plugin system: `plugin/mod.rs` with TOML manifest parsing, `PluginTool` shell-command wrapper with `{arg}` placeholder substitution, and `load_plugin_tools` directory scanning
-- Background tasks: `background/manager.rs` with `tokio::process::Child` tracking, `spawn` with `max_running_tasks` limit enforcement, and `stop` that kills the child process
-- All missing submodule stubs created so `cargo check` passes with only warnings
-- **55 unit tests** covering `config`, `share`, `metadata`, `session_state`, `tools::extract_key_argument`, `file` helpers, `shell`, `web`, `auth::oauth`, `approval_runtime`, `hooks`, `plugin`, `background`
-- **Implemented working tool logic** for:
-  - `ReadFile` (with line offsets, tail mode, max lines/bytes, truncation)
-  - `WriteFile` (overwrite / append modes)
-  - `StrReplaceFile` (single and multiple edits)
-  - `Glob` (pattern matching with directory filter)
-  - `Grep` (regex-based file content search with multiple output modes)
-  - `ReadMediaFile` (base64 encoding)
-  - `Shell` (foreground execution via `tokio::process::Command` with timeout)
-  - `FetchUrl` (HTTP GET via `reqwest`)
+- Runtime Extensions: `notifications/manager.rs`, `approval_runtime/runtime.rs`, `hooks/engine.rs`, `auth/oauth.rs`
+- Plugin system: `plugin/mod.rs`
+- Background tasks: `background/manager.rs`
 
 **Next up:**
-- MCP tool loading integration
-- Additional polish and edge-case handling
+- `wire/server.rs` full JSON-RPC/WebSocket wire server
+- `web/*` (app.rs, auth.rs, models.rs, runner/process.rs, runner/worker.rs, store/sessions.rs)
+- `vis/*` visualization pipeline
+- `ui/shell/*` and `ui/print/*` rich interactive features
+- `notifications/*` full queue and delivery logic
+- `utils/*` remaining utility modules (diff, clipboard, editor, export, file_filter, frontmatter, logging, sensitive, server, signals, string, subprocess_env, term, datetime, broadcast, changelog)
+- `background/store.rs` persistence layer
+- `acp/*` full RPC handlers
+- `plugin/manager.rs` + `plugin/tool.rs`
+- `cli/*` full command implementations

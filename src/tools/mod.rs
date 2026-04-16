@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+pub mod agent;
 pub mod ask_user;
 pub mod background;
 pub mod dmail;

@@ -39,7 +39,10 @@ impl Session {
         }
         let text = match std::fs::read_to_string(&self.context_file) {
             Ok(t) => t,
-            Err(_) => return true,
+            Err(e) => {
+                tracing::warn!("Failed to read context file {}: {}", self.context_file.display(), e);
+                return true;
+            }
         };
         for line in text.lines() {
             let line = line.trim();
@@ -54,7 +57,10 @@ impl Session {
                         }
                     }
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!("Failed to parse context line in {}: {}", self.context_file.display(), e);
+                    continue;
+                }
             }
         }
         true
@@ -86,6 +92,7 @@ impl Session {
     /// Refreshes the session title and updated_at from the wire file.
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn refresh(&mut self) {
+        self.title = "Untitled".into();
         self.updated_at = if self.context_file.exists() {
             match tokio::fs::metadata(&self.context_file).await {
                 Ok(m) => m
@@ -111,7 +118,6 @@ impl Session {
                 return;
             }
         }
-        self.title = "Untitled".into();
     }
 }
 
@@ -144,6 +150,9 @@ pub async fn create(
     let context_file = if let Some(cf) = context_file {
         if let Some(parent) = cf.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        if cf.exists() {
+            assert!(cf.is_file(), "context file must be a file");
         }
         cf
     } else {
@@ -215,18 +224,27 @@ pub async fn list(work_dir: PathBuf) -> Vec<Session> {
         return Vec::new();
     };
 
-    let mut sessions = Vec::new();
+    let mut session_ids = std::collections::HashSet::new();
     let Ok(entries) = std::fs::read_dir(work_dir_meta.sessions_dir()) else {
         return Vec::new();
     };
 
     for entry in entries.flatten() {
-        let session_id = entry.file_name().to_string_lossy().to_string();
-        let session_dir = entry.path();
+        let path = entry.path();
+        if path.is_dir() {
+            session_ids.insert(path.file_name().unwrap_or_default().to_string_lossy().to_string());
+        } else if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+            session_ids.insert(path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+        }
+    }
+
+    let mut sessions = Vec::new();
+    for session_id in session_ids {
+        migrate_session_context_file(&work_dir_meta, &session_id);
+        let session_dir = work_dir_meta.sessions_dir().join(&session_id);
         if !session_dir.is_dir() {
             continue;
         }
-        migrate_session_context_file(&work_dir_meta, &session_id);
         let context_file = session_dir.join("context.jsonl");
         if !context_file.exists() {
             continue;

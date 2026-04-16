@@ -11,6 +11,7 @@ pub struct Context {
     next_checkpoint_id: usize,
     system_prompt: Option<String>,
     file_backend: PathBuf,
+    restored: bool,
 }
 
 impl Context {
@@ -23,23 +24,46 @@ impl Context {
             next_checkpoint_id: 0,
             system_prompt: None,
             file_backend,
+            restored: false,
         }
     }
 
     /// Restores the context from the JSONL file.
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn restore(&mut self) -> crate::error::Result<()> {
+        if self.restored && !self.history.is_empty() {
+            return Err(crate::error::KimiCliError::Generic(
+                "Context has already been modified; restore is not allowed.".into(),
+            ));
+        }
+        self.history.clear();
+        self.token_count = 0;
+        self.pending_token_estimate = 0;
+        self.next_checkpoint_id = 0;
+        self.system_prompt = None;
+
         if !self.file_backend.exists() {
+            self.restored = true;
             return Ok(());
         }
-        let text = tokio::fs::read_to_string(&self.file_backend).await?;
+        let text = match tokio::fs::read_to_string(&self.file_backend).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("failed to read context file: {}", e);
+                self.restored = true;
+                return Ok(());
+            }
+        };
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            self.apply_record(line)?;
+            if let Err(e) = self.apply_record(line) {
+                tracing::warn!("skipping malformed context line: {e}");
+            }
         }
+        self.restored = true;
         Ok(())
     }
 
@@ -81,6 +105,14 @@ impl Context {
         Ok(())
     }
 
+    /// Appends multiple messages in a batch.
+    pub async fn append_messages(&mut self, messages: &[Message]) -> crate::error::Result<()> {
+        for msg in messages {
+            self.append_message(msg).await?;
+        }
+        Ok(())
+    }
+
     /// Persists the current token count as a usage marker.
     #[tracing::instrument(level = "trace", skip(self))]
     pub async fn update_token_count(&mut self, count: usize) -> crate::error::Result<()> {
@@ -97,9 +129,15 @@ impl Context {
         Ok(())
     }
 
-    /// Creates a checkpoint marker in the file.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn checkpoint(&mut self) -> crate::error::Result<()> {
+    /// Creates a checkpoint marker in the file, optionally with a user message.
+    #[tracing::instrument(level = "debug", skip(self, add_user_message))]
+    pub async fn checkpoint(
+        &mut self,
+        add_user_message: Option<&Message>,
+    ) -> crate::error::Result<()> {
+        if let Some(msg) = add_user_message {
+            self.append_message(msg).await?;
+        }
         let id = self.next_checkpoint_id;
         self.next_checkpoint_id += 1;
         let record = serde_json::json!({"role": "_checkpoint", "id": id});
@@ -123,24 +161,47 @@ impl Context {
         self.system_prompt.as_deref()
     }
 
-    /// Sets the system prompt and persists it.
+    /// Sets the system prompt and persists it, prepending atomically if file exists.
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn write_system_prompt(&mut self, prompt: &str) -> crate::error::Result<()> {
         self.system_prompt = Some(prompt.to_string());
         let record = serde_json::json!({"role": "_system_prompt", "content": prompt});
-        let mut file = tokio::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&self.file_backend)
-            .await?;
-        file.write_all(serde_json::to_string(&record)?.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        let line = serde_json::to_string(&record)?;
+
+        if self.file_backend.exists() {
+            let existing = tokio::fs::read_to_string(&self.file_backend).await.unwrap_or_default();
+            let tmp = self.file_backend.with_extension("tmp");
+            let mut file = tokio::fs::File::create(&tmp).await?;
+            file.write_all(line.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+            file.write_all(existing.as_bytes()).await?;
+            tokio::fs::rename(&tmp, &self.file_backend).await?;
+        } else {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&self.file_backend)
+                .await?;
+            file.write_all(line.as_bytes()).await?;
+            file.write_all(b"\n").await?;
+        }
         Ok(())
     }
 
     /// Returns the next checkpoint ID that will be assigned.
     pub fn next_checkpoint_id(&self) -> usize {
         self.next_checkpoint_id
+    }
+
+    /// Rotates the context file to the next available backup name.
+    fn next_available_rotation(&self) -> Option<PathBuf> {
+        for i in 1..=1000 {
+            let candidate = self.file_backend.with_extension(format!("jsonl.{i}"));
+            if !candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     /// Reverts the context file and in-memory state to the given checkpoint.
@@ -173,6 +234,9 @@ impl Context {
             tracing::warn!("checkpoint {} not found, no revert performed", checkpoint_id);
             return Ok(());
         }
+        if let Some(rotated) = self.next_available_rotation() {
+            tokio::fs::rename(&self.file_backend, &rotated).await?;
+        }
         let truncated = kept.join("\n") + "\n";
         tokio::fs::write(&self.file_backend, truncated).await?;
         self.history.clear();
@@ -180,8 +244,25 @@ impl Context {
         self.pending_token_estimate = 0;
         self.next_checkpoint_id = 0;
         self.system_prompt = None;
+        self.restored = false;
         self.restore().await?;
         tracing::info!("reverted context to checkpoint {}", checkpoint_id);
+        Ok(())
+    }
+
+    /// Clears the context by rotating the file and resetting state.
+    pub async fn clear(&mut self) -> crate::error::Result<()> {
+        if let Some(rotated) = self.next_available_rotation() {
+            if self.file_backend.exists() {
+                tokio::fs::rename(&self.file_backend, &rotated).await?;
+            }
+        }
+        self.history.clear();
+        self.token_count = 0;
+        self.pending_token_estimate = 0;
+        self.next_checkpoint_id = 0;
+        self.system_prompt = None;
+        self.restored = false;
         Ok(())
     }
 }
@@ -201,9 +282,9 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         let mut ctx = Context::new(tmp.join("context.jsonl"));
         assert_eq!(ctx.next_checkpoint_id(), 0);
-        ctx.checkpoint().await.unwrap();
+        ctx.checkpoint(None).await.unwrap();
         assert_eq!(ctx.next_checkpoint_id(), 1);
-        ctx.checkpoint().await.unwrap();
+        ctx.checkpoint(None).await.unwrap();
         assert_eq!(ctx.next_checkpoint_id(), 2);
     }
 
@@ -221,7 +302,7 @@ mod tests {
             tool_call_id: None,
         };
         ctx.append_message(&msg1).await.unwrap();
-        ctx.checkpoint().await.unwrap();
+        ctx.checkpoint(None).await.unwrap();
 
         let msg2 = Message {
             role: "assistant".into(),
@@ -230,7 +311,7 @@ mod tests {
             tool_call_id: None,
         };
         ctx.append_message(&msg2).await.unwrap();
-        ctx.checkpoint().await.unwrap();
+        ctx.checkpoint(None).await.unwrap();
 
         let msg3 = Message {
             role: "user".into(),

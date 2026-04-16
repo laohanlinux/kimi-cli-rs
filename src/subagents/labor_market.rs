@@ -47,7 +47,7 @@ pub struct AgentTypeDefinition {
 /// Registry of built-in subagent types.
 #[derive(Debug, Clone, Default)]
 pub struct LaborMarket {
-    builtin_types: HashMap<String, AgentTypeDefinition>,
+    pub builtin_types: HashMap<String, AgentTypeDefinition>,
 }
 
 impl LaborMarket {
@@ -57,5 +57,13 @@ impl LaborMarket {
 
     pub fn get_builtin_type(&self, name: &str) -> Option<&AgentTypeDefinition> {
         self.builtin_types.get(name)
+    }
+
+    pub fn require_builtin_type(&self, name: &str) -> crate::error::Result<&AgentTypeDefinition> {
+        self.builtin_types
+            .get(name)
+            .ok_or_else(|| crate::error::KimiCliError::Config(
+                format!("Unknown subagent type: {name}").into()
+            ))
     }
 }

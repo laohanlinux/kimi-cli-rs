@@ -181,7 +181,7 @@ impl Default for Runtime {
             config: crate::config::Config::default(),
             oauth: crate::auth::oauth::OAuthManager::default(),
             llm: None,
-            session,
+            session: session.clone(),
             builtin_args: BuiltinSystemPromptArgs {
                 KIMI_NOW: chrono::Local::now().to_rfc3339(),
                 KIMI_WORK_DIR: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -207,7 +207,7 @@ impl Default for Runtime {
             skills: HashMap::new(),
             additional_dirs: Vec::new(),
             skills_dirs: Vec::new(),
-            subagent_store: Some(crate::subagents::store::SubagentStore::default()),
+            subagent_store: Some(crate::subagents::store::SubagentStore::new(&session)),
             approval_runtime: Some(Arc::new(crate::approval_runtime::runtime::ApprovalRuntime::default())),
             root_wire_hub: Some(Arc::new(crate::wire::root_hub::RootWireHub::default())),
             subagent_id: None,
@@ -321,7 +321,7 @@ impl Runtime {
             let _ = crate::session_state::save_session_state(&*state, &session_dir_for_cb);
         }) as Arc<dyn Fn() + Send + Sync>;
 
-        let _approval_state = crate::soul::approval::ApprovalState::new(
+        let approval_state = crate::soul::approval::ApprovalState::new(
             effective_yolo,
             approval_state_arc.lock().unwrap().auto_approve_actions.clone(),
             Some(on_change),
@@ -350,7 +350,7 @@ impl Runtime {
                 KIMI_SHELL: format!("{} (`{}`)", environment.shell_name, environment.shell_path.display()),
             },
             denwa_renji: crate::soul::denwa_renji::DenwaRenji::default(),
-            approval: crate::soul::approval::Approval::default(),
+            approval: crate::soul::approval::Approval::new(false, Some(approval_state), None),
             labor_market: Arc::new(tokio::sync::RwLock::new(crate::subagents::labor_market::LaborMarket::default())),
             environment,
             notifications: notifications.clone(),
@@ -475,7 +475,12 @@ pub async fn load_agent(
         tracing::debug!("Excluding tools: {:?}", agent_spec.exclude_tools);
         tools.retain(|tool| !agent_spec.exclude_tools.contains(tool));
     }
-    toolset.load_tools(&tools, tool_deps)?;
+    toolset.load_tools(&tools, tool_deps).await?;
+
+    // Add the Agent tool if requested and not excluded.
+    if tools.contains(&"Agent".to_string()) && !agent_spec.exclude_tools.contains(&"Agent".to_string()) {
+        toolset.add(Arc::new(crate::tools::agent::Agent::new(runtime.clone()))).await;
+    }
 
     let plugin_tools = crate::plugin::load_plugin_tools(
         &crate::plugin::get_plugins_dir(),
@@ -483,21 +488,21 @@ pub async fn load_agent(
         &runtime.approval,
     );
     for plugin_tool in plugin_tools {
-        if toolset.find(&plugin_tool.name()).is_some() {
+        if toolset.find(&plugin_tool.name()).await.is_some() {
             tracing::warn!(
                 "Plugin tool '{}' conflicts with an existing tool, skipping",
                 plugin_tool.name()
             );
             continue;
         }
-        toolset.add(plugin_tool);
+        toolset.add(plugin_tool).await;
     }
 
     if !mcp_configs.is_empty() {
         if start_mcp_loading {
             toolset.load_mcp_tools(mcp_configs, runtime, true).await?;
         } else {
-            toolset.defer_mcp_tool_loading(mcp_configs, runtime);
+            toolset.defer_mcp_tool_loading(mcp_configs, runtime).await;
         }
     }
 

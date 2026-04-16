@@ -1,4 +1,5 @@
 pub mod environment;
+pub mod io;
 pub mod path;
 
 /// Shortens a string by truncating from the end with an ellipsis.

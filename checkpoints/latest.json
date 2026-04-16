@@ -1,5 +1,5 @@
 {
-  "phase": 5,
+  "phase": 11,
   "completed_modules": [
     "analysis",
     "translation_plan",
@@ -34,6 +34,14 @@
     "src/notifications/manager.rs",
     "src/background/manager.rs",
     "src/subagents/store.rs",
+    "src/subagents/labor_market.rs",
+    "src/subagents/models.rs",
+    "src/subagents/builder.rs",
+    "src/subagents/core.rs",
+    "src/subagents/runner.rs",
+    "src/subagents/git_context.rs",
+    "src/subagents/registry.rs",
+    "src/approval_runtime/models.rs",
     "src/approval_runtime/runtime.rs",
     "src/hooks/engine.rs",
     "src/auth/oauth.rs",
@@ -52,6 +60,7 @@
     "src/tools/todo/mod.rs",
     "src/tools/background/mod.rs",
     "src/tools/dmail/mod.rs",
+    "src/tools/agent/mod.rs",
     "src/app/mod.rs",
     "src/cli/mod.rs",
     "src/main.rs",
@@ -68,11 +77,25 @@
     "src/vis/api/mod.rs",
     "src/acp/mod.rs",
     "src/utils/mod.rs",
+    "src/utils/io.rs",
     "src/plugin/mod.rs",
+    "src/agentspec.rs",
     "integration_tests"
   ],
-  "in_progress_modules": [],
-  "next_module_group": "Phase 3: Tools detailed implementation and Phase 4: Wire/Servers polish",
-  "last_updated": "2026-04-15T18:10:00Z",
-  "notes": "Phase 1 Foundation and Phase 2 Soul Core completed. Added load_config_from_string, WireFile::records, Session::refresh title derivation. Fixed KimiSoul hook engine binding to toolset, added KimiToolset MCP loading stubs, and resolved load_agent subagent registration by wrapping LaborMarket in Arc<RwLock>. 58 unit + 5 integration tests passing."
+  "in_progress_modules": [
+    "src/soul/agent.rs post-init bindings",
+    "src/wire/server.rs full JSON-RPC/WebSocket",
+    "src/web/app.rs + auth.rs + models.rs + runner/* + store/*",
+    "src/vis/ visualization pipeline",
+    "src/ui/print/ + ui/shell/ rich features",
+    "src/notifications/ full queue + delivery",
+    "src/utils/ remaining utilities",
+    "src/background/ persistence store",
+    "src/acp/ full handlers",
+    "src/plugin/ manager + tool",
+    "src/cli/ full commands"
+  ],
+  "next_module_group": "Remaining large modules: wire/server.rs, web/*, vis/*, ui/shell/*, notifications/*, utils/*, background/store, acp/*, plugin/*, cli/*",
+  "last_updated": "2026-04-16T14:30:00+08:00",
+  "notes": "Completed approval system, message helpers, context improvements, toolset enhancements, KimiSoul hook events + auto-compaction + wire integration, slash command wire sends, background manager fleshing (get_task/kill/wait/read_output), AskUserQuestion wire protocol, EnterPlanMode/ExitPlanMode wire protocol, TaskList/TaskOutput/TaskStop parity, config JSON migration + Theme enum, session assertion + legacy detection, metadata kaos integration + atomic writes. 66 unit + 5 integration tests passing. cargo check clean."
 }

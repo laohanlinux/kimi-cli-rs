@@ -19,6 +19,10 @@ impl RootWireHub {
     pub fn publish(&self, msg: crate::wire::types::WireMessage) {
         let _ = self.tx.send(msg);
     }
+
+    pub fn publish_nowait(&self, msg: crate::wire::types::WireMessage) {
+        let _ = self.tx.send(msg);
+    }
 }
 
 impl Default for RootWireHub {

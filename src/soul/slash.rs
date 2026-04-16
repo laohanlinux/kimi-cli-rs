@@ -79,6 +79,12 @@ pub fn default_registry() -> SlashCommandRegistry {
         description: "Clear the context".into(),
         handler: Box::new(|soul, args| Box::pin(cmd_clear(soul, args))),
     });
+    // Alias: reset
+    registry.register(SlashCommand {
+        name: "reset".into(),
+        description: "Alias for /clear".into(),
+        handler: Box::new(|soul, args| Box::pin(cmd_clear(soul, args))),
+    });
 
     registry.register(SlashCommand {
         name: "yolo".into(),
@@ -178,21 +184,44 @@ async fn cmd_init(soul: &mut crate::soul::kimisoul::KimiSoul, _args: &str) {
 
 async fn cmd_compact(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
     tracing::info!("Running /compact");
+    if let Some(ref hub) = soul.runtime.root_wire_hub {
+        hub.publish(crate::wire::types::WireMessage::TextPart {
+            text: "Compacting context...".into(),
+        });
+    }
     soul.compact_context(args.trim()).await;
+    if let Some(ref hub) = soul.runtime.root_wire_hub {
+        let st = soul.status();
+        hub.publish(crate::wire::types::WireMessage::StatusUpdate {
+            snapshot: crate::wire::types::StatusSnapshot {
+                context_usage: st.context_usage,
+                yolo_enabled: st.yolo_enabled,
+                plan_mode: st.plan_mode,
+                context_tokens: st.context_tokens,
+                max_context_tokens: st.max_context_tokens,
+                mcp_status: st.mcp_status,
+            },
+        });
+    }
 }
 
 async fn cmd_clear(soul: &mut crate::soul::kimisoul::KimiSoul, _args: &str) {
     tracing::info!("Running /clear");
     soul.clear_context().await;
+    if let Some(ref hub) = soul.runtime.root_wire_hub {
+        hub.publish(crate::wire::types::WireMessage::TextPart {
+            text: "Context cleared.".into(),
+        });
+    }
 }
 
 async fn cmd_yolo(soul: &mut crate::soul::kimisoul::KimiSoul, _args: &str) {
     let runtime = &mut soul.runtime;
-    if runtime.approval.yolo {
-        runtime.approval.yolo = false;
+    if runtime.approval.is_yolo().await {
+        runtime.approval.set_yolo(false).await;
         tracing::info!("YOLO mode disabled");
     } else {
-        runtime.approval.yolo = true;
+        runtime.approval.set_yolo(true).await;
         tracing::info!("YOLO mode enabled");
     }
 }
@@ -218,6 +247,22 @@ async fn cmd_plan(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
             soul.set_plan_mode(new_state).await;
         }
     }
+    if let Some(ref hub) = soul.runtime.root_wire_hub {
+        hub.publish(crate::wire::types::WireMessage::TextPart {
+            text: format!("Plan mode: {}", if soul.plan_mode { "on" } else { "off" }),
+        });
+        let st = soul.status();
+        hub.publish(crate::wire::types::WireMessage::StatusUpdate {
+            snapshot: crate::wire::types::StatusSnapshot {
+                context_usage: st.context_usage,
+                yolo_enabled: st.yolo_enabled,
+                plan_mode: st.plan_mode,
+                context_tokens: st.context_tokens,
+                max_context_tokens: st.max_context_tokens,
+                mcp_status: st.mcp_status,
+            },
+        });
+    }
 }
 
 async fn cmd_add_dir(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
@@ -226,7 +271,12 @@ async fn cmd_add_dir(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
         tracing::info!("No directory provided. Usage: /add-dir <path>");
         return;
     }
-    let path = std::path::PathBuf::from(path);
+    let path = if path.starts_with("~/") {
+        dirs::home_dir().map(|h| h.join(&path[2..])).unwrap_or_else(|| std::path::PathBuf::from(path))
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    let work_dir = &soul.runtime.session.work_dir;
     if !path.exists() {
         tracing::warn!("Directory does not exist: {}", path.display());
         return;
@@ -235,8 +285,33 @@ async fn cmd_add_dir(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
         tracing::warn!("Not a directory: {}", path.display());
         return;
     }
-    soul.runtime.session.state.additional_dirs.push(path.to_string_lossy().to_string());
+    // Check exact match with work_dir.
+    if path == *work_dir {
+        tracing::warn!("Cannot add the work directory itself as an additional dir");
+        return;
+    }
+    // Check containment within work_dir.
+    if !path.starts_with(work_dir) {
+        tracing::warn!("Directory must be inside the work directory: {}", path.display());
+        return;
+    }
+    // Check duplicates.
+    let path_str = path.to_string_lossy().to_string();
+    if soul.runtime.session.state.additional_dirs.contains(&path_str) {
+        tracing::info!("Directory already added: {}", path.display());
+        return;
+    }
+    // Check readability.
+    match std::fs::read_dir(&path) {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!("Directory not readable: {} ({e})", path.display());
+            return;
+        }
+    }
+    soul.runtime.session.state.additional_dirs.push(path_str);
     let _ = soul.runtime.session.save_state();
+    tracing::info!("Added directory: {}", path.display());
 }
 
 async fn cmd_export(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {

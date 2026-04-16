@@ -92,10 +92,17 @@ impl KimiCLI {
         )
         .await?;
 
+        let global_mcp_config = crate::mcp::cli::load_mcp_config();
+        let mcp_configs = if global_mcp_config.servers.is_empty() {
+            vec![]
+        } else {
+            vec![global_mcp_config]
+        };
+
         let agent = crate::soul::agent::load_agent(
             agent_file.unwrap_or_else(|| Path::new("AGENTS.md")),
             &runtime,
-            vec![],
+            mcp_configs,
             false,
         )
         .await?;
@@ -126,20 +133,60 @@ impl KimiCLI {
         &mut self,
         user_input: Vec<crate::soul::message::ContentPart>,
     ) -> crate::error::Result<crate::soul::TurnOutcome> {
+        self.run_with_wire(user_input, |_wire| Box::pin(async {})).await
+    }
+
+    /// Runs a single turn with a custom wire UI loop.
+    #[tracing::instrument(level = "info", skip(self, ui_loop_fn))]
+    pub async fn run_with_wire(
+        &mut self,
+        user_input: Vec<crate::soul::message::ContentPart>,
+        ui_loop_fn: impl FnOnce(crate::wire::Wire) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    ) -> crate::error::Result<crate::soul::TurnOutcome> {
         crate::soul::run_soul(
             &mut self.soul,
             user_input,
-            |_wire| Box::pin(async {}),
+            ui_loop_fn,
             tokio::sync::watch::channel(false).1,
             &self.runtime,
         )
         .await
     }
 
+    /// Runs a single turn in print mode and prints the assistant response.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn run_print(
+        &mut self,
+        user_input: Vec<crate::soul::message::ContentPart>,
+    ) -> crate::error::Result<()> {
+        let outcome = self.run(user_input).await?;
+        if let Some(msg) = outcome.final_message {
+            let text = msg.extract_text("");
+            if !text.is_empty() {
+                println!("{}", text);
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the ACP server.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn run_acp(&mut self) -> crate::error::Result<()> {
+        let server = crate::acp::AcpServer::new(0);
+        server.serve().await
+    }
+
+    /// Runs the wire stdio server.
+    #[tracing::instrument(level = "info", skip(self))]
+    pub async fn run_wire_stdio(&mut self) -> crate::error::Result<()> {
+        let server = crate::wire::server::WireServer::new();
+        server.serve().await
+    }
+
     /// Runs the interactive shell UI.
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn run_shell(
-        &mut self,
+        mut self,
         command: Option<&str>,
         _prefill_text: Option<&str>,
     ) -> crate::error::Result<ShellOutcome> {

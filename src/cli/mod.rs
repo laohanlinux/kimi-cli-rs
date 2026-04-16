@@ -117,6 +117,9 @@ pub enum Command {
         /// File path or session ID to import.
         target: String,
     },
+    /// Manage MCP server configurations.
+    #[command(subcommand)]
+    Mcp(crate::mcp::cli::McpCommand),
 }
 
 /// Parses CLI arguments and returns the parsed structure.

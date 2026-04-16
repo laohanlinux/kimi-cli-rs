@@ -4,6 +4,14 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock};
 
+/// A chunk of task output.
+#[derive(Debug, Clone)]
+pub struct OutputChunk {
+    pub text: String,
+    pub offset: u64,
+    pub next_offset: u64,
+}
+
 /// State of a background task.
 #[derive(Debug, Clone)]
 pub struct BackgroundTask {
@@ -14,6 +22,7 @@ pub struct BackgroundTask {
     pub stderr: Arc<Mutex<String>>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
     pub running: Arc<Mutex<bool>>,
+    pub failure_reason: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<tokio::process::Child>>>,
 }
 
@@ -27,6 +36,7 @@ impl BackgroundTask {
             stderr: Arc::new(Mutex::new(String::new())),
             exit_code: Arc::new(Mutex::new(None)),
             running: Arc::new(Mutex::new(true)),
+            failure_reason: Arc::new(Mutex::new(None)),
             child: Arc::new(Mutex::new(None)),
         }
     }
@@ -170,9 +180,102 @@ impl BackgroundTaskManager {
         self.tasks.read().await.get(id).cloned()
     }
 
+    /// Alias for get.
+    pub async fn get_task(&self, id: &str) -> Option<BackgroundTask> {
+        self.get(id).await
+    }
+
+    /// Waits for a task to reach a terminal state.
+    pub async fn wait(&self, id: &str, timeout_s: u64) -> Option<BackgroundTask> {
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_s);
+        loop {
+            if let Some(task) = self.get(id).await {
+                if !task.is_running().await {
+                    return Some(task);
+                }
+            } else {
+                return None;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return self.get(id).await;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Resolves the output log file path for a task.
+    pub fn resolve_output_path(&self, id: &str) -> std::path::PathBuf {
+        crate::share::get_share_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("logs")
+            .join(format!("{id}.log"))
+    }
+
+    /// Reads a chunk of task output from memory.
+    pub async fn read_output(&self, id: &str, offset: u64, max_bytes: usize) -> OutputChunk {
+        let text = if let Some(task) = self.get(id).await {
+            task.output().await
+        } else {
+            String::new()
+        };
+        let bytes = text.as_bytes();
+        let start = (offset as usize).min(bytes.len());
+        let end = (start + max_bytes).min(bytes.len());
+        let chunk_text = String::from_utf8_lossy(&bytes[start..end]).to_string();
+        OutputChunk {
+            text: chunk_text,
+            offset,
+            next_offset: end as u64,
+        }
+    }
+
+    /// Creates a background agent task (stub).
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub async fn create_agent_task(
+        &self,
+        agent_id: &str,
+        subagent_type: &str,
+        prompt: &str,
+        description: &str,
+        _tool_call_id: &str,
+        _model_override: Option<&str>,
+        timeout_s: Option<u64>,
+        _resumed: bool,
+    ) -> crate::error::Result<BackgroundTask> {
+        tracing::info!(
+            agent_id = %agent_id,
+            subagent_type = %subagent_type,
+            "background agent task creation is a stub in the Rust port"
+        );
+        let id = format!("agent-{}-{}", subagent_type, uuid::Uuid::new_v4());
+        let task = BackgroundTask::new(
+            id,
+            format!("agent {}: {} (prompt: {})", agent_id, description, prompt),
+        );
+        if let Some(t) = timeout_s {
+            tokio::spawn({
+                let task = task.clone();
+                async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(t)).await;
+                    let _ = task.child.lock().await.take();
+                    *task.running.lock().await = false;
+                    *task.exit_code.lock().await = Some(0);
+                }
+            });
+        }
+        self.tasks.write().await.insert(task.id.clone(), task.clone());
+        Ok(task)
+    }
+
     /// Stops a running task by killing its process.
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn stop(&self, id: &str) -> Option<BackgroundTask> {
+        self.kill(id, "Stopped by TaskStop").await
+    }
+
+    /// Kills a task with a recorded reason.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub async fn kill(&self, id: &str, reason: &str) -> Option<BackgroundTask> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get(id) {
             if let Some(mut child) = task.child.lock().await.take() {
@@ -181,6 +284,7 @@ impl BackgroundTaskManager {
                 }
             }
             *task.running.lock().await = false;
+            *task.failure_reason.lock().await = Some(reason.to_string());
         }
         tasks.remove(id)
     }

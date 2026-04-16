@@ -54,6 +54,7 @@ glob = "0.3"
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
 base64 = "0.22"
 image = "0.25"
 zip = "2"
@@ -76,6 +77,8 @@ flate2 = "1"
 
 # Process
 sysinfo = "0.33"
+rmcp = { version = "1.4.0", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "reqwest"] }
+http = "1.4.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

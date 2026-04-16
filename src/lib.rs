@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 pub mod acp;
 pub mod agentspec;
 pub mod app;
@@ -10,6 +12,7 @@ pub mod constant;
 pub mod error;
 pub mod hooks;
 pub mod llm;
+pub mod mcp;
 pub mod metadata;
 pub mod notifications;
 pub mod plugin;

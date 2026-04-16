@@ -44,6 +44,10 @@ pub enum WireMessage {
         id: String,
         items: Vec<QuestionItem>,
     },
+    QuestionResponse {
+        request_id: String,
+        answers: std::collections::HashMap<String, String>,
+    },
     ToolCallRequest {
         id: String,
         tool_call_id: String,
@@ -64,6 +68,8 @@ pub struct StatusSnapshot {
     pub plan_mode: bool,
     pub context_tokens: usize,
     pub max_context_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_status: Option<crate::mcp::server::McpStatusSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

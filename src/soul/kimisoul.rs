@@ -73,6 +73,12 @@ impl KimiSoul {
         self.runtime.llm.as_ref().and_then(|l| l.thinking)
     }
 
+    pub fn model_capabilities(&self) -> std::collections::HashSet<crate::config::ModelCapability> {
+        self.runtime.llm.as_ref()
+            .map(|l| l.capabilities.clone())
+            .unwrap_or_default()
+    }
+
     pub fn status(&self) -> crate::soul::StatusSnapshot {
         let token_count = self.context.history().iter()
             .flat_map(|m| m.content.iter())
@@ -87,12 +93,14 @@ impl KimiSoul {
         } else {
             0.0
         };
+        let mcp_status = self.agent.toolset.mcp_status_snapshot();
         crate::soul::StatusSnapshot {
             context_usage: usage,
-            yolo_enabled: self.runtime.approval.yolo,
+            yolo_enabled: self.runtime.approval.yolo_blocking(),
             plan_mode: self.plan_mode,
             context_tokens: token_count,
             max_context_tokens: max_size,
+            mcp_status,
         }
     }
 
@@ -113,7 +121,7 @@ impl KimiSoul {
     }
 
     pub fn is_yolo(&self) -> bool {
-        self.runtime.approval.yolo
+        self.runtime.approval.yolo_blocking()
     }
 
     pub fn hook_engine(&self) -> &crate::hooks::engine::HookEngine {
@@ -132,7 +140,7 @@ impl KimiSoul {
     async fn collect_injections(&self) -> Vec<crate::soul::dynamic_injection::DynamicInjection> {
         let mut injections = Vec::new();
         for provider in &self.injection_providers {
-            let result = provider.get_injections(&[], self).await;
+            let result = provider.get_injections(self.context.history(), self).await;
             injections.extend(result);
         }
         injections
@@ -217,6 +225,22 @@ impl KimiSoul {
         true
     }
 
+    fn should_auto_compact(&self) -> bool {
+        let ratio = self.runtime.config.loop_control.compaction_trigger_ratio;
+        if ratio <= 0.0 {
+            return false;
+        }
+        let max_size = self.runtime.llm.as_ref().map(|l| l.max_context_size).unwrap_or(128_000);
+        let token_count = self.context.history().iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|p| match p {
+                crate::soul::message::ContentPart::Text { text } => Some(text.len().div_ceil(4)),
+                _ => None,
+            })
+            .sum::<usize>();
+        (token_count as f64 / max_size as f64) >= ratio
+    }
+
     /// Compacts the conversation context.
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn compact_context(&mut self, custom_instruction: &str) {
@@ -261,6 +285,15 @@ impl KimiSoul {
         let mut consumed = false;
         while let Ok(content) = self.steer_queue.try_recv() {
             tracing::debug!("consuming steer: {}", content);
+            let steer_msg = crate::soul::message::Message {
+                role: "user".into(),
+                content: vec![crate::soul::message::ContentPart::Text { text: content }],
+                tool_calls: None,
+                tool_call_id: None,
+            };
+            if let Err(e) = self.context.append_message(&steer_msg).await {
+                tracing::warn!("failed to inject steer message: {}", e);
+            }
             consumed = true;
         }
         consumed
@@ -276,7 +309,14 @@ impl KimiSoul {
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn run(&mut self, user_input: Vec<crate::soul::message::ContentPart>) -> crate::error::Result<crate::soul::TurnOutcome> {
         tracing::info!("starting soul run");
+
         let _ = self.consume_pending_steers().await;
+
+        // Trigger UserPromptSubmit hook.
+        let engine = self.hook_engine.clone();
+        let _ = engine.trigger("UserPromptSubmit", "", serde_json::json!({})).await;
+
+        let mcp_started = self.start_background_mcp_loading().await;
 
         let text = user_input.iter().filter_map(|p| match p {
             crate::soul::message::ContentPart::Text { text } => Some(text.as_str()),
@@ -318,8 +358,29 @@ impl KimiSoul {
 
         let stop_reason = self.turn(user_message).await?;
 
+        if mcp_started {
+            self.wait_for_background_mcp_loading().await;
+        }
+
         // Retrieve the last assistant message as the final message, if any.
         let final_message = self.context.history().iter().rev().find(|m| m.role == "assistant").cloned();
+
+        // Auto title generation on first turn.
+        if self.runtime.session.state.title_generate_attempts == 0 {
+            if let Some(ref msg) = final_message {
+                let title_text = msg.extract_text("").chars().take(40).collect::<String>();
+                if !title_text.is_empty() {
+                    self.runtime.session.title = title_text;
+                    let _ = self.runtime.session.save_state();
+                }
+            }
+            self.runtime.session.state.title_generate_attempts += 1;
+            let _ = self.runtime.session.save_state();
+        }
+
+        // Trigger Stop hook.
+        let engine = self.hook_engine.clone();
+        let _ = engine.trigger("Stop", "", serde_json::json!({})).await;
 
         Ok(crate::soul::TurnOutcome {
             stop_reason,
@@ -335,7 +396,7 @@ impl KimiSoul {
         });
 
         self.context.append_message(&user_message).await?;
-        self.context.checkpoint().await?;
+        self.context.checkpoint(None).await?;
         self.runtime
             .denwa_renji
             .set_n_checkpoints(self.context.next_checkpoint_id());
@@ -354,6 +415,13 @@ impl KimiSoul {
     async fn agent_loop(&mut self) -> crate::error::Result<crate::soul::TurnStopReason> {
         let max_steps = self.runtime.config.loop_control.max_steps_per_turn.max(1);
         for step_no in 0..max_steps {
+            // Auto-compaction check.
+            if self.should_auto_compact() {
+                self.publish_wire(crate::wire::types::WireMessage::CompactionBegin);
+                self.compact_context("").await;
+                self.publish_wire(crate::wire::types::WireMessage::CompactionEnd);
+            }
+
             match self.step(step_no).await? {
                 Some(reason) => return Ok(reason),
                 None => {
@@ -386,7 +454,18 @@ impl KimiSoul {
     async fn step(&mut self, step_no: usize) -> crate::error::Result<Option<crate::soul::TurnStopReason>> {
         self.publish_wire(crate::wire::types::WireMessage::StepBegin { step_no });
         let _ = self.consume_pending_steers().await;
-        let _injections = self.collect_injections().await;
+
+        // Apply dynamic injections.
+        let injections = self.collect_injections().await;
+        for injection in injections {
+            let msg = crate::soul::message::Message {
+                role: "user".into(),
+                content: vec![crate::soul::message::ContentPart::Text { text: injection.content }],
+                tool_calls: None,
+                tool_call_id: None,
+            };
+            self.context.append_message(&msg).await?;
+        }
 
         while let Some(notification) = self.runtime.notifications.try_recv() {
             self.publish_wire(crate::wire::types::WireMessage::Notification {
@@ -423,17 +502,17 @@ impl KimiSoul {
                 let mut tool_results = Vec::new();
                 for call in tool_calls {
                     // Approval check when not in YOLO mode.
-                    let mut approved = self.runtime.approval.yolo;
+                    let mut approved = self.runtime.approval.yolo_blocking();
 
                     if !approved {
                         // Evaluate approval runtime rules first.
                         if let Some(ref ar) = self.runtime.approval_runtime {
                             match ar.evaluate(&call.name, &call.arguments) {
-                                crate::approval_runtime::runtime::ApprovalDecision::Approve => {
+                                crate::approval_runtime::ApprovalDecision::Approve => {
                                     tracing::info!(tool = %call.name, "auto-approved by approval runtime");
                                     approved = true;
                                 }
-                                crate::approval_runtime::runtime::ApprovalDecision::Deny { reason } => {
+                                crate::approval_runtime::ApprovalDecision::Deny { reason } => {
                                     tracing::info!(tool = %call.name, reason = %reason, "denied by approval runtime");
                                     let reject_result = crate::soul::message::ToolResult {
                                         tool_call_id: call.id.clone(),
@@ -445,10 +524,7 @@ impl KimiSoul {
                                     let result_msg = crate::soul::message::Message {
                                         role: "tool".into(),
                                         content: vec![crate::soul::message::ContentPart::Text {
-                                            text: match &reject_result.return_value {
-                                                crate::soul::message::ToolReturnValue::Ok { output, .. } => output.clone(),
-                                                crate::soul::message::ToolReturnValue::Error { error } => format!("Error: {error}"),
-                                            },
+                                            text: reject_result.return_value.extract_text(),
                                         }],
                                         tool_calls: None,
                                         tool_call_id: Some(reject_result.tool_call_id.clone()),
@@ -456,7 +532,7 @@ impl KimiSoul {
                                     self.context.append_message(&result_msg).await?;
                                     continue;
                                 }
-                                crate::approval_runtime::runtime::ApprovalDecision::RequestUser => {
+                                crate::approval_runtime::ApprovalDecision::RequestUser => {
                                     // Fall through to wire approval request.
                                 }
                             }
@@ -502,10 +578,7 @@ impl KimiSoul {
                             let result_msg = crate::soul::message::Message {
                                 role: "tool".into(),
                                 content: vec![crate::soul::message::ContentPart::Text {
-                                    text: match &reject_result.return_value {
-                                        crate::soul::message::ToolReturnValue::Ok { output, .. } => output.clone(),
-                                        crate::soul::message::ToolReturnValue::Error { error } => format!("Error: {error}"),
-                                    },
+                                    text: reject_result.return_value.extract_text(),
                                 }],
                                 tool_calls: None,
                                 tool_call_id: Some(reject_result.tool_call_id.clone()),
@@ -517,18 +590,14 @@ impl KimiSoul {
 
                     let result = self.agent.toolset.handle(call, &self.runtime).await;
                     tool_results.push(result.clone());
-                    let result_msg = crate::soul::message::Message {
-                        role: "tool".into(),
-                        content: vec![crate::soul::message::ContentPart::Text {
-                            text: match &result.return_value {
-                                crate::soul::message::ToolReturnValue::Ok { output, .. } => output.clone(),
-                                crate::soul::message::ToolReturnValue::Error { error } => format!("Error: {error}"),
-                            },
-                        }],
-                        tool_calls: None,
-                        tool_call_id: Some(result.tool_call_id.clone()),
-                    };
+                    let result_msg = crate::soul::message::tool_result_to_message(&result);
                     self.context.append_message(&result_msg).await?;
+
+                    // Sync plan mode if a tool (e.g., EnterPlanMode/ExitPlanMode) modified persisted state.
+                    let fresh_state = crate::session_state::load_session_state(&self.runtime.session.dir());
+                    if fresh_state.plan_mode != self.plan_mode {
+                        self.set_plan_mode_inner(fresh_state.plan_mode);
+                    }
                 }
                 return Ok(None); // Continue stepping
             }
@@ -554,10 +623,24 @@ impl KimiSoul {
     }
 
     pub async fn start_background_mcp_loading(&mut self) -> bool {
-        self.agent.toolset.start_background_mcp_loading()
+        if self.agent.toolset.has_deferred_mcp_tools() {
+            self.publish_wire(crate::wire::types::WireMessage::McpLoadingBegin);
+            let started = self.agent.toolset.start_background_mcp_loading();
+            if !started {
+                self.publish_wire(crate::wire::types::WireMessage::McpLoadingEnd);
+            }
+            started
+        } else {
+            false
+        }
     }
 
     pub async fn wait_for_background_mcp_loading(&mut self) {
-        self.agent.toolset.wait_for_background_mcp_loading().await;
+        if self.agent.toolset.has_pending_mcp_tools()
+            || self.agent.toolset.has_deferred_mcp_tools()
+        {
+            self.agent.toolset.wait_for_background_mcp_loading().await;
+            self.publish_wire(crate::wire::types::WireMessage::McpLoadingEnd);
+        }
     }
 }

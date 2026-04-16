@@ -115,10 +115,7 @@ pub async fn execute_side_question(
 }
 
 fn tool_result_to_message(tool_result: &crate::soul::message::ToolResult) -> crate::soul::message::Message {
-    let content = match &tool_result.return_value {
-        crate::soul::message::ToolReturnValue::Ok { output, .. } => output.clone(),
-        crate::soul::message::ToolReturnValue::Error { error } => error.clone(),
-    };
+    let content = tool_result.return_value.extract_text();
     crate::soul::message::Message {
         role: "tool".into(),
         content: vec![crate::soul::message::ContentPart::Text { text: content }],

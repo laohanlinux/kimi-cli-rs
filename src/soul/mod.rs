@@ -29,13 +29,14 @@ pub struct TurnOutcome {
 }
 
 /// Soul status snapshot for UI display.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct StatusSnapshot {
     pub context_usage: f64,
     pub yolo_enabled: bool,
     pub plan_mode: bool,
     pub context_tokens: usize,
     pub max_context_tokens: usize,
+    pub mcp_status: Option<crate::mcp::server::McpStatusSnapshot>,
 }
 
 /// Formats a token count as a compact string (e.g., 28.5k, 1.2m).

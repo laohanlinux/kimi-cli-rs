@@ -250,7 +250,7 @@ fn convert_chat_message(msg: &ChatMessage) -> crate::soul::message::Message {
 
 fn convert_tools(toolset: &crate::soul::toolset::KimiToolset) -> Vec<ToolDef> {
     toolset
-        .tools()
+        .tools_sync()
         .iter()
         .map(|(name, tool)| ToolDef {
             tool_type: "function".into(),

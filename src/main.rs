@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 /// Main entrypoint for the Kimi CLI.
 #[tokio::main]
 #[tracing::instrument(level = "info")]
@@ -45,7 +47,7 @@ async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
             let mut prefill = None::<String>;
             let mut command_override = command.clone();
             loop {
-                let mut app = kimi_cli_rs::app::KimiCLI::create(
+                let app = kimi_cli_rs::app::KimiCLI::create(
                     session.clone(),
                     Some(config.clone()),
                     args.model.as_deref(),
@@ -186,6 +188,9 @@ async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
                 session.id
             );
         }
+        Some(kimi_cli_rs::cli::Command::Mcp(mcp_cmd)) => {
+            kimi_cli_rs::mcp::cli::run(mcp_cmd).await?;
+        }
         None => {
             // Default to shell mode.
             let work_dir = std::env::current_dir()?;
@@ -196,7 +201,7 @@ async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
             let mut prefill = None::<String>;
             let mut command_override: Option<String> = None;
             loop {
-                let mut app = kimi_cli_rs::app::KimiCLI::create(
+                let app = kimi_cli_rs::app::KimiCLI::create(
                     session.clone(),
                     Some(config.clone()),
                     args.model.as_deref(),

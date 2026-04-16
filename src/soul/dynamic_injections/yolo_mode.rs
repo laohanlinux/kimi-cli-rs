@@ -12,7 +12,7 @@ impl DynamicInjectionProvider for YoloModeInjectionProvider {
         _history: &[crate::soul::message::Message],
         soul: &crate::soul::kimisoul::KimiSoul,
     ) -> Vec<DynamicInjection> {
-        if !soul.runtime.approval.yolo {
+        if !soul.runtime.approval.is_yolo().await {
             return Vec::new();
         }
         vec![DynamicInjection {

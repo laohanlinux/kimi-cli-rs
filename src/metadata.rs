@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+const LOCAL_KAOS: &str = "local";
+
 /// Metadata for a single work directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkDirMeta {
@@ -13,12 +15,18 @@ impl WorkDirMeta {
     /// Stable sessions directory based on MD5 hash of the path.
     pub fn sessions_dir(&self) -> PathBuf {
         let hash = format!("{:x}", md5::compute(&self.path));
-        crate::share::get_share_dir().unwrap().join("sessions").join(hash)
+        let dir_basename = if self.kaos == LOCAL_KAOS {
+            hash
+        } else {
+            format!("{}_{}", self.kaos, hash)
+        };
+        crate::share::get_share_dir().unwrap().join("sessions").join(dir_basename)
     }
 }
 
 /// Global metadata index.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Metadata {
     pub work_dirs: Vec<WorkDirMeta>,
 }
@@ -67,8 +75,7 @@ pub fn load_metadata() -> Metadata {
 #[tracing::instrument(level = "debug")]
 pub fn save_metadata(metadata: &Metadata) -> crate::error::Result<()> {
     let path = crate::share::get_share_dir()?.join("kimi.json");
-    let text = serde_json::to_string_pretty(metadata)?;
-    std::fs::write(&path, text)?;
+    crate::utils::io::atomic_json_write(metadata, &path)?;
     Ok(())
 }
 

@@ -1,2 +1,5 @@
+pub mod models;
 pub mod runtime;
-pub mod placeholder;
+
+pub use models::{ApprovalDecision, ApprovalRequestRecord, ApprovalRuntimeEvent, ApprovalSource};
+pub use runtime::ApprovalRuntime;

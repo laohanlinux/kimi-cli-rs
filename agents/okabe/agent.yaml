@@ -1,0 +1,22 @@
+version: 1
+agent:
+  extend: default
+  tools:
+    - "Agent"
+    - "SendDMail"
+    - "AskUserQuestion"
+    - "SetTodoList"
+    - "Shell"
+    - "TaskList"
+    - "TaskOutput"
+    - "TaskStop"
+    - "ReadFile"
+    - "ReadMediaFile"
+    - "Glob"
+    - "Grep"
+    - "WriteFile"
+    - "StrReplaceFile"
+    - "SearchWeb"
+    - "FetchURL"
+    - "ExitPlanMode"
+    - "EnterPlanMode"

@@ -40,6 +40,16 @@ pub enum ModelCapability {
     AlwaysThinking,
 }
 
+/// Terminal color theme.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, strum::Display, strum::EnumString)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// LLM model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmModel {
@@ -193,17 +203,48 @@ impl Default for McpClientConfig {
     }
 }
 
+/// MCP server transport configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpServerConfig {
+    /// stdio transport: command-based subprocess.
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
+    },
+    /// HTTP/SSE transport: remote URL.
+    Http {
+        url: String,
+        #[serde(default = "default_http_transport")]
+        transport: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auth: Option<String>,
+    },
+}
+
+fn default_http_transport() -> String {
+    "http".into()
+}
+
 /// MCP configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfig {
     #[serde(default)]
     pub client: McpClientConfig,
+    #[serde(default)]
+    pub servers: HashMap<String, McpServerConfig>,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
             client: McpClientConfig::default(),
+            servers: HashMap::new(),
         }
     }
 }
@@ -238,7 +279,7 @@ pub struct Config {
     #[serde(default)]
     pub default_editor: String,
     #[serde(default = "default_theme")]
-    pub theme: String,
+    pub theme: Theme,
     #[serde(default)]
     pub models: HashMap<String, LlmModel>,
     #[serde(default)]
@@ -259,8 +300,8 @@ pub struct Config {
     pub merge_all_available_skills: bool,
 }
 
-fn default_theme() -> String {
-    "dark".into()
+fn default_theme() -> Theme {
+    Theme::Dark
 }
 
 impl Default for Config {
@@ -273,7 +314,7 @@ impl Default for Config {
             default_yolo: false,
             default_plan_mode: false,
             default_editor: String::new(),
-            theme: default_theme(),
+            theme: Theme::Dark,
             models: HashMap::new(),
             providers: HashMap::new(),
             loop_control: LoopControl {
@@ -326,6 +367,10 @@ pub fn load_config(path: Option<&Path>) -> crate::error::Result<Config> {
     let default_path = get_config_file()?;
     let config_path = path.unwrap_or(&default_path);
     let is_default = config_path == default_path.as_path();
+
+    if is_default && !config_path.exists() {
+        migrate_json_config_to_toml()?;
+    }
 
     if !config_path.exists() {
         let mut config = Config::default();
@@ -380,8 +425,33 @@ pub fn save_config(config: &Config, path: Option<&Path>) -> crate::error::Result
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = toml::to_string_pretty(config)?;
-    std::fs::write(path, text)?;
+    let is_json = path.extension().and_then(|s| s.to_str()) == Some("json");
+    if is_json {
+        let data = serde_json::to_value(config)?;
+        crate::utils::io::atomic_json_write(&data, path)?;
+    } else {
+        let text = toml::to_string_pretty(config)?;
+        std::fs::write(path, text)?;
+    }
+    Ok(())
+}
+
+/// Migrates legacy JSON config to TOML.
+fn migrate_json_config_to_toml() -> crate::error::Result<()> {
+    let share_dir = crate::share::get_share_dir()?;
+    let old_path = share_dir.join("config.json");
+    let new_path = share_dir.join("config.toml");
+    if !old_path.exists() || new_path.exists() {
+        return Ok(());
+    }
+    tracing::info!("Migrating legacy config from {} to {}", old_path.display(), new_path.display());
+    let text = std::fs::read_to_string(&old_path)?;
+    let data: serde_json::Value = serde_json::from_str(&text)?;
+    let config: Config = serde_json::from_value(data)?;
+    save_config(&config, Some(&new_path))?;
+    let backup = old_path.with_extension("json.bak");
+    std::fs::rename(&old_path, &backup)?;
+    tracing::info!("Legacy config backed up to {}", backup.display());
     Ok(())
 }
 
