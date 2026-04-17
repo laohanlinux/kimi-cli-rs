@@ -142,21 +142,27 @@ impl KimiCLI {
         &mut self,
         user_input: Vec<crate::soul::message::ContentPart>,
     ) -> crate::error::Result<crate::soul::TurnOutcome> {
-        self.run_with_wire(user_input, |_wire| Box::pin(async {})).await
+        self.run_with_wire(user_input, |_wire| Box::pin(async {}), None)
+            .await
     }
 
     /// Runs a single turn with a custom wire UI loop.
-    #[tracing::instrument(level = "info", skip(self, ui_loop_fn))]
+    ///
+    /// When `cancel` is `Some(receiver)`, [`KimiSoul::run`] cooperates at step boundaries and
+    /// while waiting for tool approval. Use a [`tokio::sync::watch::Sender`] to request cancel.
+    #[tracing::instrument(level = "info", skip(self, ui_loop_fn, cancel))]
     pub async fn run_with_wire(
         &mut self,
         user_input: Vec<crate::soul::message::ContentPart>,
         ui_loop_fn: impl FnOnce(crate::wire::Wire) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+        cancel: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> crate::error::Result<crate::soul::TurnOutcome> {
+        let cancel_rx = cancel.unwrap_or_else(|| tokio::sync::watch::channel(false).1);
         crate::soul::run_soul(
             &mut self.soul,
             user_input,
             ui_loop_fn,
-            tokio::sync::watch::channel(false).1,
+            cancel_rx,
             &self.runtime,
         )
         .await
@@ -199,7 +205,7 @@ impl KimiCLI {
     pub async fn run_shell(
         mut self,
         command: Option<&str>,
-        _prefill_text: Option<&str>,
+        prefill_text: Option<&str>,
     ) -> crate::error::Result<ShellOutcome> {
         if let Some(cmd) = command {
             let parts = vec![crate::soul::message::ContentPart::Text { text: cmd.to_string() }];
@@ -208,7 +214,7 @@ impl KimiCLI {
         }
 
         let mut ui = crate::ui::shell::ShellUi::default();
-        let outcome = ui.run(self).await?;
+        let outcome = ui.run(self, prefill_text).await?;
         Ok(outcome)
     }
 

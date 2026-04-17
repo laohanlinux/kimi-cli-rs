@@ -74,9 +74,27 @@ pub async fn run_soul(
     user_input: Vec<crate::soul::message::ContentPart>,
     ui_loop_fn: impl FnOnce(crate::wire::Wire) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     cancel_event: tokio::sync::watch::Receiver<bool>,
-    _runtime: &crate::soul::agent::Runtime,
+    runtime: &crate::soul::agent::Runtime,
 ) -> crate::error::Result<TurnOutcome> {
     let wire = crate::wire::Wire::default();
+
+    // KimiSoul publishes to `root_wire_hub`; the per-turn `Wire` is what interactive UIs read.
+    // Forward hub → session wire so the shell sees TurnBegin, StepBegin, MCP, approvals, etc.
+    let hub_bridge = runtime.root_wire_hub.as_ref().map(|hub| {
+        let mut hub_rx = hub.subscribe();
+        let wire_out = wire.soul_side();
+        tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match hub_rx.recv().await {
+                    Ok(msg) => wire_out.send(msg),
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        })
+    });
+
     let ui_task = tokio::spawn(ui_loop_fn(wire.clone()));
 
     // Approval response pump: forwards wire responses into the soul.
@@ -101,12 +119,23 @@ pub async fn run_soul(
         });
     }
 
-    let result = soul.run(user_input).await;
+    let result = soul.run(user_input, Some(&cancel_event)).await;
 
     // Graceful shutdown: give UI a moment to process final messages.
+    let stop_tag = match &result {
+        Ok(o) if o.stop_reason == TurnStopReason::Cancelled => "cancelled",
+        Ok(_) => "complete",
+        Err(_) => "error",
+    };
     wire.soul_side().send_merged(crate::wire::types::WireMessage::TurnEnd {
-        stop_reason: "complete".into(),
+        stop_reason: stop_tag.into(),
     });
+
+    // Let the hub bridge drain in-flight events before we tear it down.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    if let Some(h) = hub_bridge {
+        h.abort();
+    }
 
     drop(approval_pump);
     let _ = ui_task.await;
@@ -115,11 +144,7 @@ pub async fn run_soul(
         Ok(outcome) => Ok(outcome),
         Err(e) => {
             tracing::error!("soul run failed: {}", e);
-            Ok(TurnOutcome {
-                stop_reason: TurnStopReason::NoToolCalls,
-                final_message: None,
-                step_count: 0,
-            })
+            Err(e)
         }
     }
 }

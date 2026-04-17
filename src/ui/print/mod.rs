@@ -71,7 +71,7 @@ impl PrintUi {
                         }
                     }
                 })
-            })
+            }, None)
             .await;
 
         let _ = print_handle.await;

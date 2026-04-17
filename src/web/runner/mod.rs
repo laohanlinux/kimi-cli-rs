@@ -92,7 +92,7 @@ impl WebRunner {
                     })
                 };
 
-                match app.run_with_wire(parts, ui_loop).await {
+                match app.run_with_wire(parts, ui_loop, None).await {
                     Ok(outcome) => {
                         if let Some(msg) = outcome.final_message {
                             let text = msg.extract_text("");

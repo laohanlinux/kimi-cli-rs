@@ -94,7 +94,7 @@ impl ForegroundSubagentRunner {
             .ok();
 
         let parts = vec![crate::soul::message::ContentPart::Text { text: prompt }];
-        let outcome = soul.run(parts).await;
+        let outcome = soul.run(parts, None).await;
 
         match outcome {
             Ok(result) => {

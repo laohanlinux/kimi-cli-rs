@@ -1,6 +1,6 @@
 use crate::soul::compaction::Compaction;
 use std::path::PathBuf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// The core agent execution engine.
 pub struct KimiSoul {
@@ -304,15 +304,43 @@ impl KimiSoul {
         }
     }
 
+    #[inline]
+    fn soul_cancelled(cancel_rx: Option<&watch::Receiver<bool>>) -> bool {
+        cancel_rx.is_some_and(|r| *r.borrow())
+    }
+
+    async fn wait_cancelled(mut rx: watch::Receiver<bool>) {
+        loop {
+            if *rx.borrow() {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// Runs a single user turn.
-    #[tracing::instrument(level = "info", skip(self))]
-    pub async fn run(&mut self, user_input: Vec<crate::soul::message::ContentPart>) -> crate::error::Result<crate::soul::TurnOutcome> {
+    ///
+    /// When `cancel_rx` is [`Some`], the loop checks it between steps and while waiting for
+    /// interactive approval, and stops with [`TurnStopReason::Cancelled`].
+    #[tracing::instrument(level = "info", skip(self, cancel_rx))]
+    pub async fn run(
+        &mut self,
+        user_input: Vec<crate::soul::message::ContentPart>,
+        cancel_rx: Option<&watch::Receiver<bool>>,
+    ) -> crate::error::Result<crate::soul::TurnOutcome> {
         tracing::info!("starting soul run");
 
         let _ = self.consume_pending_steers().await;
 
         // Ensure OAuth tokens are fresh before proceeding.
         if let Some(ref provider) = self.runtime.config.providers.get(&self.runtime.config.default_model) {
+            if provider.oauth.is_some() {
+                self.publish_wire(crate::wire::types::WireMessage::Notification {
+                    text: "Refreshing sign-in token…".into(),
+                });
+            }
             let _ = self.runtime.oauth.ensure_fresh(provider.oauth.as_ref()).await;
         }
 
@@ -336,6 +364,14 @@ impl KimiSoul {
                 });
             }
             _ => {}
+        }
+
+        if Self::soul_cancelled(cancel_rx) {
+            return Ok(crate::soul::TurnOutcome {
+                stop_reason: crate::soul::TurnStopReason::Cancelled,
+                final_message: None,
+                step_count: 0,
+            });
         }
 
         let mcp_started = self.start_background_mcp_loading().await;
@@ -378,7 +414,7 @@ impl KimiSoul {
             tool_call_id: None,
         };
 
-        let stop_reason = self.turn(user_message).await?;
+        let stop_reason = self.turn(user_message, cancel_rx).await?;
 
         if mcp_started {
             self.wait_for_background_mcp_loading().await;
@@ -415,11 +451,22 @@ impl KimiSoul {
         })
     }
 
-    async fn turn(&mut self, user_message: crate::soul::message::Message) -> crate::error::Result<crate::soul::TurnStopReason> {
+    async fn turn(
+        &mut self,
+        user_message: crate::soul::message::Message,
+        cancel_rx: Option<&watch::Receiver<bool>>,
+    ) -> crate::error::Result<crate::soul::TurnStopReason> {
         let user_text = user_message.extract_text("");
         self.publish_wire(crate::wire::types::WireMessage::TurnBegin {
             user_input: user_text.clone(),
         });
+
+        if Self::soul_cancelled(cancel_rx) {
+            self.publish_wire(crate::wire::types::WireMessage::TurnEnd {
+                stop_reason: "Cancelled".into(),
+            });
+            return Ok(crate::soul::TurnStopReason::Cancelled);
+        }
 
         self.context.append_message(&user_message).await?;
         self.context.checkpoint(None).await?;
@@ -427,7 +474,7 @@ impl KimiSoul {
             .denwa_renji
             .set_n_checkpoints(self.context.next_checkpoint_id());
 
-        let stop_reason = self.agent_loop().await?;
+        let stop_reason = self.agent_loop(cancel_rx).await?;
 
         self.publish_wire(crate::wire::types::WireMessage::TurnEnd {
             stop_reason: format!("{:?}", stop_reason),
@@ -437,10 +484,13 @@ impl KimiSoul {
     }
 
     /// Internal step loop.
-    #[tracing::instrument(level = "debug", skip(self))]
-    async fn agent_loop(&mut self) -> crate::error::Result<crate::soul::TurnStopReason> {
+    #[tracing::instrument(level = "debug", skip(self, cancel_rx))]
+    async fn agent_loop(&mut self, cancel_rx: Option<&watch::Receiver<bool>>) -> crate::error::Result<crate::soul::TurnStopReason> {
         let max_steps = self.runtime.config.loop_control.max_steps_per_turn.max(1);
         for step_no in 0..max_steps {
+            if Self::soul_cancelled(cancel_rx) {
+                return Ok(crate::soul::TurnStopReason::Cancelled);
+            }
             // Auto-compaction check.
             if self.should_auto_compact() {
                 self.publish_wire(crate::wire::types::WireMessage::CompactionBegin);
@@ -448,7 +498,7 @@ impl KimiSoul {
                 self.publish_wire(crate::wire::types::WireMessage::CompactionEnd);
             }
 
-            match self.step(step_no).await? {
+            match self.step(step_no, cancel_rx).await? {
                 Some(reason) => return Ok(reason),
                 None => {
                     if let Some(dmail) = self.runtime.denwa_renji.fetch_pending_dmail() {
@@ -504,6 +554,15 @@ impl KimiSoul {
                 Ok(msg) => return Ok(msg),
                 Err(e) => {
                     tracing::warn!(attempt = attempt + 1, max_retries, "LLM chat failed: {}", e);
+                    let note = format!(
+                        "Model request failed (attempt {}/{}): {}",
+                        attempt + 1,
+                        max_retries,
+                        e
+                    );
+                    self.publish_wire(crate::wire::types::WireMessage::Notification {
+                        text: note,
+                    });
                     last_err = Some(e);
                     if attempt < max_retries - 1 {
                         let delay = std::time::Duration::from_secs(2_u64.pow(attempt as u32));
@@ -516,8 +575,15 @@ impl KimiSoul {
     }
 
     /// Executes one LLM step.
-    #[tracing::instrument(level = "debug", skip(self))]
-    async fn step(&mut self, step_no: usize) -> crate::error::Result<Option<crate::soul::TurnStopReason>> {
+    #[tracing::instrument(level = "debug", skip(self, cancel_rx))]
+    async fn step(
+        &mut self,
+        step_no: usize,
+        cancel_rx: Option<&watch::Receiver<bool>>,
+    ) -> crate::error::Result<Option<crate::soul::TurnStopReason>> {
+        if Self::soul_cancelled(cancel_rx) {
+            return Ok(Some(crate::soul::TurnStopReason::Cancelled));
+        }
         self.publish_wire(crate::wire::types::WireMessage::StepBegin { step_no });
         let _ = self.consume_pending_steers().await;
 
@@ -556,6 +622,15 @@ impl KimiSoul {
         let history = self.context.history().to_vec();
         let tools = &self.agent.toolset;
 
+        if Self::soul_cancelled(cancel_rx) {
+            return Ok(Some(crate::soul::TurnStopReason::Cancelled));
+        }
+
+        let model_label = self.model_name();
+        self.publish_wire(crate::wire::types::WireMessage::Notification {
+            text: format!("Waiting for model `{model_label}` (network request)…"),
+        });
+
         let assistant_msg = self.chat_with_retry(llm, &system_prompt, &history, Some(tools)).await?;
 
         self.context.append_message(&assistant_msg).await?;
@@ -565,6 +640,9 @@ impl KimiSoul {
             if !tool_calls.is_empty() {
                 let mut tool_results = Vec::new();
                 for call in tool_calls {
+                    if Self::soul_cancelled(cancel_rx) {
+                        return Ok(Some(crate::soul::TurnStopReason::Cancelled));
+                    }
                     // Approval check when not in YOLO mode.
                     let mut approved = self.runtime.approval.yolo_blocking();
 
@@ -613,22 +691,44 @@ impl KimiSoul {
                             description: format!("Call tool '{}' with args: {}", call.name, call.arguments),
                             display: None,
                         });
-                        // Wait for approval response via the wire pump.
-                        approved = match tokio::time::timeout(
-                            tokio::time::Duration::from_secs(300),
-                            self.approval_queue.recv(),
-                        )
-                        .await
-                        {
-                            Ok(Some(crate::wire::types::WireMessage::ApprovalResponse {
-                                response,
-                                ..
-                            })) => response.to_lowercase() == "approve",
-                            Ok(Some(_)) => false,
-                            Ok(None) => false,
-                            Err(_) => {
-                                tracing::warn!("Approval request timed out for tool {}", call.name);
-                                false
+                        // Wait for approval response via the wire pump (or cooperative cancel).
+                        let timeout = tokio::time::Duration::from_secs(300);
+                        approved = match cancel_rx {
+                            Some(crx) => {
+                                let crx2 = crx.clone();
+                                tokio::select! {
+                                    _ = Self::wait_cancelled(crx2) => {
+                                        return Ok(Some(crate::soul::TurnStopReason::Cancelled));
+                                    }
+                                    recv_out = tokio::time::timeout(timeout, self.approval_queue.recv()) => {
+                                        match recv_out {
+                                            Ok(Some(crate::wire::types::WireMessage::ApprovalResponse {
+                                                response,
+                                                ..
+                                            })) => response.to_lowercase() == "approve",
+                                            Ok(Some(_)) => false,
+                                            Ok(None) => false,
+                                            Err(_) => {
+                                                tracing::warn!("Approval request timed out for tool {}", call.name);
+                                                false
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None => {
+                                match tokio::time::timeout(timeout, self.approval_queue.recv()).await {
+                                    Ok(Some(crate::wire::types::WireMessage::ApprovalResponse {
+                                        response,
+                                        ..
+                                    })) => response.to_lowercase() == "approve",
+                                    Ok(Some(_)) => false,
+                                    Ok(None) => false,
+                                    Err(_) => {
+                                        tracing::warn!("Approval request timed out for tool {}", call.name);
+                                        false
+                                    }
+                                }
                             }
                         };
                         if !approved {

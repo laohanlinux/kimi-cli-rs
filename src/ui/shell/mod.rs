@@ -2,35 +2,22 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-mod visualize;
+use crate::ui::repl::{
+    self, draw, InputState, ReplMessage, ReplMessageRole,
+};
 
-/// A single turn in the shell history.
-#[derive(Debug, Clone)]
-struct HistoryItem {
-    role: &'static str,
-    content: String,
-}
-
-/// Live event displayed during a turn.
-#[derive(Debug, Clone)]
-enum LiveEvent {
-    StepBegin(usize),
-    ToolCall(visualize::ToolCallBlock),
-    Think(String),
-    Notification(visualize::NotificationBlock),
-    McpLoading,
-    McpDone,
-}
-
-/// Modal overlay state.
+/// Modal overlay state (Kimi approvals — not in Claude REPL, layered on top).
 #[derive(Debug, Clone)]
 enum Modal {
     Approval {
@@ -51,25 +38,6 @@ enum Modal {
     },
 }
 
-/// Runtime state for a single turn.
-#[derive(Debug, Clone)]
-struct TurnState {
-    live_events: Vec<LiveEvent>,
-    modal: Option<Modal>,
-    content_block: visualize::ContentBlock,
-}
-
-impl TurnState {
-    fn new() -> Self {
-        Self {
-            live_events: Vec::new(),
-            modal: None,
-            content_block: visualize::ContentBlock::new(false),
-        }
-    }
-}
-
-/// Popup overlay state for the shell.
 #[derive(Debug, Clone)]
 enum Popup {
     Help,
@@ -78,218 +46,434 @@ enum Popup {
     TaskList(Vec<String>, usize),
 }
 
-/// Interactive shell UI using ratatui.
-#[derive(Debug, Clone, Default)]
+/// Interactive shell: Claude Code REPL layout + Kimi Wire/Soul backend.
 pub struct ShellUi {
-    history: Vec<HistoryItem>,
-    input: String,
-    cursor: usize,
-    input_history: Vec<String>,
-    input_history_index: Option<usize>,
-    scroll_offset: u16,
-    status: Option<crate::soul::StatusSnapshot>,
+    /// Ported from Claude `ReplApp::messages`.
+    messages: Vec<ReplMessage>,
+    /// Ported from Claude `ReplApp::input`.
+    input: InputState,
+    scroll_offset: usize,
+    loading: bool,
+    header_model: String,
+    permission_label: String,
     plan_mode: bool,
+    status: Option<crate::soul::StatusSnapshot>,
     popup: Option<Popup>,
+    modal: Option<Modal>,
+    session_dir: PathBuf,
+    /// Session work directory (shown in footer).
+    work_dir: PathBuf,
+    exit: bool,
+    running: bool,
+    wire_tx: Option<tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>>,
+    wire_rx: Option<tokio::sync::mpsc::Receiver<crate::wire::types::WireMessage>>,
+    /// Bounded 1: one turn result per flight (`oneshot` + `now_or_never` drops the rx each poll → bug).
+    outcome_rx: Option<tokio::sync::mpsc::Receiver<crate::error::Result<crate::soul::TurnOutcome>>>,
+    cli_arc: Option<Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>>,
+    turn_cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Ctrl+C while `running`: first = cancel turn, second = quit shell.
+    turn_ctrl_c_during_run: u32,
+}
+
+impl std::fmt::Debug for ShellUi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellUi")
+            .field("messages_len", &self.messages.len())
+            .field("scroll_offset", &self.scroll_offset)
+            .field("loading", &self.loading)
+            .field("exit", &self.exit)
+            .finish()
+    }
+}
+
+impl Default for ShellUi {
+    fn default() -> Self {
+        Self {
+            messages: Vec::new(),
+            input: InputState::new(),
+            scroll_offset: 0,
+            loading: false,
+            header_model: String::new(),
+            permission_label: "Interactive".into(),
+            plan_mode: false,
+            status: None,
+            popup: None,
+            modal: None,
+            session_dir: PathBuf::new(),
+            work_dir: PathBuf::new(),
+            exit: false,
+            running: false,
+            wire_tx: None,
+            wire_rx: None,
+            outcome_rx: None,
+            cli_arc: None,
+            turn_cancel_tx: None,
+            turn_ctrl_c_during_run: 0,
+        }
+    }
 }
 
 impl ShellUi {
+    fn shorten_work_dir(path: &std::path::Path) -> String {
+        if let Some(home) = dirs::home_dir() {
+            if path.starts_with(&home) {
+                let rest = path.strip_prefix(&home).unwrap_or(path);
+                if rest.as_os_str().is_empty() {
+                    return "~".into();
+                }
+                return format!("~{}", rest.display());
+            }
+        }
+        path.display().to_string()
+    }
+
+    fn header_title(&self) -> String {
+        let perm = self
+            .status
+            .as_ref()
+            .map(|s| if s.yolo_enabled { "Yolo" } else { "Interactive" })
+            .unwrap_or(self.permission_label.as_str());
+        let plan = if self.plan_mode { " · plan" } else { "" };
+        if self.header_model.is_empty() {
+            format!("🤖 Kimi Code - {perm}{plan}")
+        } else {
+            format!("🤖 Kimi Code - {} - {perm}{plan}", self.header_model)
+        }
+    }
+
+    fn ensure_tail_assistant(&mut self) {
+        if !matches!(
+            self.messages.last().map(|m| m.role),
+            Some(ReplMessageRole::Assistant)
+        ) {
+            self.messages.push(ReplMessage::assistant(String::new()));
+        }
+    }
+
+    fn append_to_last_assistant(&mut self, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.ensure_tail_assistant();
+        if let Some(last) = self.messages.last_mut() {
+            last.text.push_str(chunk);
+        }
+    }
+
+    fn add_system_message(&mut self, text: impl Into<String>) {
+        self.messages.push(ReplMessage::system(text.into()));
+    }
+
+    #[inline]
+    fn input_area_active(&self) -> bool {
+        self.popup.is_none() && self.modal.is_none()
+    }
+
+    /// Ctrl+C / Ctrl+Q / SIGINT: idle → exit; running → first cancel turn, second exit.
+    fn handle_user_interrupt(&mut self) {
+        if self.running {
+            self.turn_ctrl_c_during_run = self.turn_ctrl_c_during_run.saturating_add(1);
+            if self.turn_ctrl_c_during_run >= 2 {
+                self.exit = true;
+                return;
+            }
+            if let Some(ref tx) = self.turn_cancel_tx {
+                let _ = tx.send(true);
+            }
+            self.add_system_message(
+                "已请求停止本轮；若仍在输出请稍候。再按一次 Ctrl+C 退出程序。",
+            );
+            self.scroll_offset = 0;
+            return;
+        }
+        self.exit = true;
+    }
+
     pub async fn run(
         &mut self,
         cli: crate::app::KimiCLI,
+        prefill: Option<&str>,
     ) -> crate::error::Result<crate::app::ShellOutcome> {
+        self.session_dir = cli.session().dir();
+        self.work_dir = cli.session().work_dir.clone();
+        self.messages = repl::load_transcript(&self.session_dir).await?;
+        if self.messages.is_empty() {
+            self.messages.push(repl::welcome_message());
+        }
+
+        let soul = cli.soul();
+        self.header_model = soul.model_name();
+        self.permission_label = if soul.is_yolo() {
+            "Yolo".into()
+        } else {
+            "Interactive".into()
+        };
+        self.plan_mode = soul.plan_mode;
+
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        crossterm::execute!(
-            &mut stdout,
-            crossterm::terminal::EnterAlternateScreen,
-            crossterm::event::EnableMouseCapture
-        )?;
+        // No `EnableMouseCapture`: lets the terminal handle mouse drag-select so transcript is copyable.
+        crossterm::execute!(&mut stdout, crossterm::terminal::EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let result = self.event_loop(&mut terminal, cli).await;
+        let (wire_tx, wire_rx) = tokio::sync::mpsc::channel::<crate::wire::types::WireMessage>(256);
+        self.wire_tx = Some(wire_tx);
+        self.wire_rx = Some(wire_rx);
+        self.cli_arc = Some(Arc::new(tokio::sync::Mutex::new(Some(cli))));
 
-        let mut stdout = io::stdout();
+        if let Some(p) = prefill {
+            let p = p.trim();
+            if !p.is_empty() {
+                self.input.content = p.to_string();
+                self.input.cursor_position = self.input.content.len();
+            }
+        }
+
+        let sigint_exit = Arc::new(AtomicBool::new(false));
+        let sigint_flag = sigint_exit.clone();
+        tokio::spawn(async move {
+            loop {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    sigint_flag.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+
+        let mut last_tick = Instant::now();
+        let tick_rate = Duration::from_millis(250);
+
+        let result = loop {
+            if sigint_exit.swap(false, Ordering::AcqRel) {
+                self.handle_user_interrupt();
+            }
+            if self.exit {
+                break Ok(crate::app::ShellOutcome::Exit);
+            }
+
+            terminal.draw(|f| self.draw(f))?;
+
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+            if crossterm::event::poll(timeout)? {
+                if let Some(outcome) = self.handle_event().await {
+                    break Ok(outcome);
+                }
+            }
+
+            self.handle_async_messages().await;
+
+            if last_tick.elapsed() >= tick_rate {
+                last_tick = Instant::now();
+            }
+        };
+
+        let to_save: Vec<ReplMessage> = self
+            .messages
+            .iter()
+            .filter(|m| {
+                !(m.role == ReplMessageRole::System && m.text.starts_with(repl::WELCOME_TEXT_PREFIX))
+            })
+            .cloned()
+            .collect();
+        let _ = repl::save_transcript(&self.session_dir, &to_save).await;
+
         disable_raw_mode()?;
-        crossterm::execute!(
-            &mut stdout,
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture
-        )?;
+        crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
         terminal.show_cursor()?;
 
         result
     }
 
-    async fn event_loop<B: ratatui::backend::Backend>(
-        &mut self,
-        terminal: &mut Terminal<B>,
-        cli: crate::app::KimiCLI,
-    ) -> crate::error::Result<crate::app::ShellOutcome> {
-        let (wire_tx, mut wire_rx) = tokio::sync::mpsc::channel::<crate::wire::types::WireMessage>(256);
-        let cli_arc = Arc::new(tokio::sync::Mutex::new(Some(cli)));
-        let turn_state = Arc::new(tokio::sync::Mutex::new(TurnState::new()));
-        let running = Arc::new(tokio::sync::Mutex::new(false));
-        let mut outcome_rx_opt: Option<tokio::sync::oneshot::Receiver<crate::error::Result<crate::soul::TurnOutcome>>> = None;
+    fn draw(&self, frame: &mut ratatui::Frame) {
+        let chunks = draw::main_vertical_layout(frame.area());
+        draw::draw_header(frame, chunks[0], &self.header_title());
+        draw::draw_messages(frame, chunks[1], &self.messages, self.scroll_offset);
+        let bottom = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(1)])
+            .split(chunks[2]);
+        draw::draw_input(frame, bottom[0], &self.input, self.input_area_active());
+        draw::draw_status_footer(
+            frame,
+            bottom[1],
+            &self.header_model,
+            &Self::shorten_work_dir(&self.work_dir),
+            self.loading,
+        );
 
-        loop {
-            let state_guard = turn_state.lock().await;
-            let is_running = *running.lock().await;
-            terminal.draw(|f| self.draw(f, &state_guard, is_running))?;
-            drop(state_guard);
+        if self.modal.is_some() {
+            let area = centered_rect_percent(60, 40, frame.area());
+            frame.render_widget(ratatui::widgets::Clear, area);
+            self.draw_modal(frame, area);
+        }
 
-            let event_fut = tokio::task::spawn_blocking(|| crossterm::event::read());
-
-            tokio::select! {
-                biased;
-                Some(msg) = wire_rx.recv() => {
-                    let mut state = turn_state.lock().await;
-                    self.handle_wire_message(&mut state, msg, &wire_tx).await;
-                }
-                event_result = event_fut => {
-                    match event_result {
-                        Ok(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
-                            if let Some(outcome) = self.handle_key(
-                                key,
-                                &turn_state,
-                                &running,
-                                &cli_arc,
-                                &wire_tx,
-                                &mut outcome_rx_opt,
-                            ).await {
-                                if matches!(outcome, crate::app::ShellOutcome::Exit) {
-                                    let mut state = turn_state.lock().await;
-                                    if state.modal.is_some() {
-                                        self.cancel_modal(&mut state, &wire_tx).await;
-                                        continue;
-                                    }
-                                }
-                                break Ok(outcome);
-                            }
-                        }
-                        Ok(Ok(Event::Resize(_, _))) => {}
-                        _ => {}
-                    }
-                }
-                Some(ref mut outcome_rx) = async { outcome_rx_opt.as_mut() }, if outcome_rx_opt.is_some() => {
-                    match outcome_rx.await {
-                        Ok(outcome_result) => {
-                            *running.lock().await = false;
-                            outcome_rx_opt = None;
-                            let mut state = turn_state.lock().await;
-                            if !state.content_block.is_empty() {
-                                let text = state.content_block.text().trim().to_string();
-                                if !text.is_empty() && !text.eq("(no response)") {
-                                    self.history.push(HistoryItem { role: "assistant", content: text });
-                                }
-                                state.content_block.clear();
-                            }
-                            state.live_events.clear();
-                            state.modal = None;
-                            drop(state);
-                            match outcome_result {
-                                Ok(outcome) => {
-                                    if let Some(msg) = outcome.final_message {
-                                        let text = msg.extract_text("");
-                                        if !text.is_empty() {
-                                            if self.history.last().map(|h| &h.content) != Some(&text) {
-                                                self.history.push(HistoryItem { role: "assistant", content: text });
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("Turn failed: {}", e);
-                                    self.history.push(HistoryItem { role: "system", content: format!("Error: {e}") });
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            *running.lock().await = false;
-                            outcome_rx_opt = None;
-                        }
-                    }
-                }
-            }
+        if let Some(ref popup) = self.popup {
+            let area = centered_rect_percent(70, 50, frame.area());
+            frame.render_widget(ratatui::widgets::Clear, area);
+            self.draw_popup(frame, area, popup);
         }
     }
 
-    async fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
-        running: &Arc<tokio::sync::Mutex<bool>>,
-        cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
-        wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
-        outcome_rx_opt: &mut Option<tokio::sync::oneshot::Receiver<crate::error::Result<crate::soul::TurnOutcome>>>,
-    ) -> Option<crate::app::ShellOutcome> {
-        if self.popup.is_some() {
-            return self.handle_popup_key(key, cli_arc).await;
-        }
-
-        {
-            let mut state = turn_state.lock().await;
-            if state.modal.is_some() {
-                return self.handle_modal_key(&mut state, key, wire_tx).await;
-            }
-        }
-
-        if *running.lock().await {
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {}
+    async fn handle_event(&mut self) -> Option<crate::app::ShellOutcome> {
+        if let Ok(event) = crossterm::event::read() {
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    return self.handle_key(key).await;
+                }
+                Event::Paste(text) => {
+                    if self.input_area_active() {
+                        self.input.insert_str(&text);
+                    }
+                }
+                Event::Resize(_, _) => {}
                 _ => {}
             }
+        }
+        None
+    }
+
+    async fn handle_key(&mut self, key: KeyEvent) -> Option<crate::app::ShellOutcome> {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.handle_user_interrupt();
+                return None;
+            }
+            _ => {}
+        }
+
+        if self.popup.is_some() {
+            return self.handle_popup_key(key).await;
+        }
+
+        if self.modal.is_some() {
+            let wire_tx = self.wire_tx.clone().expect("wire_tx");
+            return self.handle_modal_key(key, &wire_tx).await;
+        }
+
+        if key.code == KeyCode::Esc && self.loading {
+            if let Some(ref tx) = self.turn_cancel_tx {
+                let _ = tx.send(true);
+            }
+            self.outcome_rx = None;
+            self.turn_cancel_tx = None;
+            self.loading = false;
+            self.running = false;
+            self.turn_ctrl_c_during_run = 0;
+            self.add_system_message("已取消（Esc）");
+            return None;
+        }
+
+        if key.code == KeyCode::Esc {
+            self.exit = true;
             return None;
         }
 
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return Some(crate::app::ShellOutcome::Exit);
+            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                match c {
+                    'h' => self.popup = Some(Popup::Help),
+                    'r' => {
+                        let events = self.gather_replay_events().await;
+                        self.popup = Some(Popup::Replay(events, 0));
+                    }
+                    's' => {
+                        let sessions = self.gather_sessions().await;
+                        self.popup = Some(Popup::SessionPicker(sessions, 0));
+                    }
+                    't' => {
+                        let tasks = self.gather_tasks().await;
+                        self.popup = Some(Popup::TaskList(tasks, 0));
+                    }
+                    _ => {}
+                }
+                None
             }
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return Some(crate::app::ShellOutcome::Exit);
+            KeyCode::Char(c) => {
+                self.input.insert_char(c);
+                None
             }
-            KeyCode::Esc => return Some(crate::app::ShellOutcome::Exit),
-            KeyCode::Enter => {
-                let text = self.input.trim_end().to_string();
-                if text.is_empty() {
-                    return None;
-                }
+            KeyCode::Backspace => {
+                self.input.backspace();
+                None
+            }
+            KeyCode::Delete => {
+                self.input.delete();
+                None
+            }
+            KeyCode::Left => {
+                self.input.move_left();
+                None
+            }
+            KeyCode::Right => {
+                self.input.move_right();
+                None
+            }
+            KeyCode::Home => {
+                self.input.move_home();
+                None
+            }
+            KeyCode::End => {
+                self.input.move_end();
+                None
+            }
+            KeyCode::Up => {
+                self.input.history_prev();
+                None
+            }
+            KeyCode::Down => {
+                self.input.history_next();
+                None
+            }
+            KeyCode::PageUp => {
+                self.scroll_offset = self.scroll_offset.saturating_add(1);
+                None
+            }
+            KeyCode::PageDown => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                None
+            }
+            KeyCode::Enter => self.submit_input().await,
+            _ => None,
+        }
+    }
 
-                if let Some(outcome) = self.handle_shell_slash_command(&text) {
-                    self.input.clear();
-                    self.cursor = 0;
-                    self.input_history_index = None;
-                    self.scroll_offset = 0;
-                    return Some(outcome);
-                }
+    async fn submit_input(&mut self) -> Option<crate::app::ShellOutcome> {
+        if self.running {
+            return None;
+        }
+        let text = self.input.submit();
+        if text.is_empty() {
+            return None;
+        }
 
-                self.history.push(HistoryItem {
-                    role: "user",
-                    content: text.clone(),
-                });
-                if !self.input_history.contains(&text) {
-                    self.input_history.push(text.clone());
-                }
-                self.input.clear();
-                self.cursor = 0;
-                self.input_history_index = None;
-                self.scroll_offset = 0;
+        if let Some(outcome) = self.handle_shell_slash_command(&text) {
+            self.scroll_offset = 0;
+            return Some(outcome);
+        }
 
-                {
-                    let mut state = turn_state.lock().await;
-                    *state = TurnState::new();
-                }
-                *running.lock().await = true;
+        self.messages.push(ReplMessage::user(text.clone()));
+        self.messages.push(ReplMessage::assistant(String::new()));
+        self.scroll_offset = 0;
 
-                let parts = vec![crate::soul::message::ContentPart::Text { text }];
-                let cli_arc = cli_arc.clone();
-                let wire_tx = wire_tx.clone();
-                let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
-                *outcome_rx_opt = Some(outcome_rx);
-                tokio::spawn(async move {
-                    let mut cli = cli_arc.lock().await.take().expect("cli should be present");
-                    let result = cli.run_with_wire(parts, {
+        self.loading = true;
+        self.running = true;
+        self.turn_ctrl_c_during_run = 0;
+
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        self.turn_cancel_tx = Some(cancel_tx);
+
+        let parts = vec![crate::soul::message::ContentPart::Text { text }];
+        let cli_arc = self.cli_arc.clone().expect("cli_arc");
+        let wire_tx = self.wire_tx.clone().expect("wire_tx");
+        let (outcome_tx, outcome_rx) = tokio::sync::mpsc::channel(1);
+        self.outcome_rx = Some(outcome_rx);
+
+        tokio::spawn(async move {
+            let mut cli = cli_arc.lock().await.take().expect("cli");
+            let result = cli
+                .run_with_wire(
+                    parts,
+                    {
                         let wire_tx = wire_tx.clone();
                         move |wire| {
                             Box::pin(async move {
@@ -301,257 +485,113 @@ impl ShellUi {
                                 }
                             })
                         }
-                    }).await;
-                    let _ = outcome_tx.send(result);
-                    *cli_arc.lock().await = Some(cli);
-                });
-                None
-            }
-            KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                match c {
-                    'a' => {
-                        self.cursor = 0;
-                    }
-                    'e' => {
-                        self.cursor = self.input.len();
-                    }
-                    'u' => {
-                        self.input.clear();
-                        self.cursor = 0;
-                    }
-                    'k' => {
-                        self.input.truncate(self.cursor);
-                    }
-                    'w' => {
-                        let prev = self.input[..self.cursor]
-                            .trim_end_matches(|c: char| c.is_ascii_whitespace())
-                            .rfind(|c: char| c.is_ascii_whitespace())
-                            .map(|i| i + 1)
-                            .unwrap_or(0);
-                        self.input.replace_range(prev..self.cursor, "");
-                        self.cursor = prev;
-                    }
-                    'l' => {
-                        self.scroll_offset = 0;
-                    }
-                    'h' => {
-                        self.popup = Some(Popup::Help);
-                    }
-                    'r' => {
-                        let events = self.gather_replay_events(cli_arc).await;
-                        self.popup = Some(Popup::Replay(events, 0));
-                    }
-                    's' => {
-                        let sessions = self.gather_sessions().await;
-                        self.popup = Some(Popup::SessionPicker(sessions, 0));
-                    }
-                    't' => {
-                        let tasks = self.gather_tasks(cli_arc).await;
-                        self.popup = Some(Popup::TaskList(tasks, 0));
-                    }
-                    'c' => {}
-                    _ => {}
-                }
-                None
-            }
-            KeyCode::Char(c) => {
-                if self.cursor >= self.input.len() {
-                    self.input.push(c);
-                } else {
-                    self.input.insert(self.cursor, c);
-                }
-                self.cursor += 1;
-                self.input_history_index = None;
-                None
-            }
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.input.remove(self.cursor);
-                }
-                None
-            }
-            KeyCode::Delete => {
-                if self.cursor < self.input.len() {
-                    self.input.remove(self.cursor);
-                }
-                None
-            }
-            KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
-                None
-            }
-            KeyCode::Right => {
-                if self.cursor < self.input.len() {
-                    self.cursor += 1;
-                }
-                None
-            }
-            KeyCode::Home => {
-                self.cursor = 0;
-                None
-            }
-            KeyCode::End => {
-                self.cursor = self.input.len();
-                None
-            }
-            KeyCode::Up => {
-                if !self.input_history.is_empty() {
-                    let idx = self.input_history_index.map(|i| i.saturating_sub(1)).unwrap_or(self.input_history.len() - 1);
-                    if idx < self.input_history.len() {
-                        self.input = self.input_history[idx].clone();
-                        self.cursor = self.input.len();
-                        self.input_history_index = Some(idx);
-                    }
-                } else {
-                    self.scroll_offset = self.scroll_offset.saturating_add(1);
-                }
-                None
-            }
-            KeyCode::Down => {
-                if let Some(idx) = self.input_history_index {
-                    if idx + 1 < self.input_history.len() {
-                        self.input_history_index = Some(idx + 1);
-                        self.input = self.input_history[idx + 1].clone();
-                        self.cursor = self.input.len();
-                    } else {
-                        self.input.clear();
-                        self.cursor = 0;
-                        self.input_history_index = None;
-                    }
-                } else {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                }
-                None
-            }
-            _ => None,
-        }
-    }
+                    },
+                    Some(cancel_rx),
+                )
+                .await;
+            let _ = outcome_tx.send(result).await;
+            *cli_arc.lock().await = Some(cli);
+        });
 
-    fn handle_shell_slash_command(
-        &mut self,
-        text: &str,
-    ) -> Option<crate::app::ShellOutcome> {
-        if let Some(cmd_text) = text.strip_prefix('/') {
-            let parts: Vec<&str> = cmd_text.splitn(2, ' ').collect();
-            match parts[0] {
-                "reload" => {
-                    let prefill = parts.get(1).map(|s| s.to_string());
-                    return Some(crate::app::ShellOutcome::Reload {
-                        session_id: None,
-                        prefill_text: prefill,
-                    });
-                }
-                "new" => {
-                    return Some(crate::app::ShellOutcome::Reload {
-                        session_id: None,
-                        prefill_text: None,
-                    });
-                }
-                "login" | "setup" => {
-                    let status = std::process::Command::new("kimi")
-                        .arg("login")
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            return Some(crate::app::ShellOutcome::Reload {
-                                session_id: None,
-                                prefill_text: None,
-                            });
-                        }
-                        Ok(s) => {
-                            self.history.push(HistoryItem {
-                                role: "system",
-                                content: format!("Login failed with status: {s}"),
-                            });
-                        }
-                        Err(e) => {
-                            self.history.push(HistoryItem {
-                                role: "system",
-                                content: format!("Failed to run `kimi login`: {e}"),
-                            });
-                        }
-                    }
-                    return None;
-                }
-                "logout" => {
-                    let status = std::process::Command::new("kimi")
-                        .arg("logout")
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            return Some(crate::app::ShellOutcome::Reload {
-                                session_id: None,
-                                prefill_text: None,
-                            });
-                        }
-                        Ok(s) => {
-                            self.history.push(HistoryItem {
-                                role: "system",
-                                content: format!("Logout failed with status: {s}"),
-                            });
-                        }
-                        Err(e) => {
-                            self.history.push(HistoryItem {
-                                role: "system",
-                                content: format!("Failed to run `kimi logout`: {e}"),
-                            });
-                        }
-                    }
-                    return None;
-                }
-                _ => {}
-            }
-        }
         None
     }
 
-    async fn handle_wire_message(
-        &mut self,
-        state: &mut TurnState,
-        msg: crate::wire::types::WireMessage,
-        _wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
-    ) {
-        match msg {
-            crate::wire::types::WireMessage::StepBegin { step_no } => {
-                state.live_events.push(LiveEvent::StepBegin(step_no));
+    async fn handle_async_messages(&mut self) {
+        if let Some(mut rx) = self.wire_rx.take() {
+            while let Ok(msg) = rx.try_recv() {
+                self.handle_wire_message(msg).await;
             }
-            crate::wire::types::WireMessage::ToolCall { name, arguments, .. } => {
-                let argument = crate::tools::extract_key_argument(
-                    &arguments.to_string(),
-                    &name,
-                );
-                state.live_events.push(LiveEvent::ToolCall(
-                    visualize::ToolCallBlock::new(name, argument),
-                ));
-            }
-            crate::wire::types::WireMessage::ToolResult { result, .. } => {
-                // Find the most recent unfinished ToolCall block and finish it.
-                for evt in state.live_events.iter_mut().rev() {
-                    if let LiveEvent::ToolCall(block) = evt {
-                        if !block.finished {
-                            block.finish(&result);
-                            break;
+            self.wire_rx = Some(rx);
+        }
+
+        if let Some(ref mut rx) = self.outcome_rx {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.running = false;
+                    self.loading = false;
+                    self.turn_ctrl_c_during_run = 0;
+                    self.outcome_rx = None;
+                    self.turn_cancel_tx = None;
+                    self.modal = None;
+
+                    match result {
+                        Ok(outcome) => {
+                            if outcome.stop_reason == crate::soul::TurnStopReason::Cancelled {
+                                self.add_system_message("Turn cancelled.");
+                            }
+                            if let Some(msg) = outcome.final_message {
+                                let fm = msg.extract_text("");
+                                if !fm.is_empty() {
+                                    if let Some(last) = self.messages.last_mut() {
+                                        if last.role == ReplMessageRole::Assistant && last.text.trim().is_empty() {
+                                            last.text = fm;
+                                        } else if !last.text.contains(&fm) {
+                                            self.append_to_last_assistant("\n\n");
+                                            self.append_to_last_assistant(&fm);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.add_system_message(&format!("{e}"));
                         }
                     }
+                    self.scroll_offset = 0;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.running = false;
+                    self.loading = false;
+                    self.turn_ctrl_c_during_run = 0;
+                    self.outcome_rx = None;
+                    self.turn_cancel_tx = None;
+                    self.add_system_message("Turn finished but the result channel closed unexpectedly.");
+                    self.scroll_offset = 0;
                 }
             }
+        }
+    }
+
+    async fn handle_wire_message(&mut self, msg: crate::wire::types::WireMessage) {
+        match msg {
+            crate::wire::types::WireMessage::StepBegin { step_no } => {
+                self.append_to_last_assistant(&format!("\n--- step {step_no} ---\n"));
+            }
+            crate::wire::types::WireMessage::ToolCall { name, arguments, .. } => {
+                let arg = crate::tools::extract_key_argument(&arguments.to_string(), &name);
+                let line = if let Some(a) = arg {
+                    format!("\n[tool {name} ({a})]\n")
+                } else {
+                    format!("\n[tool {name}]\n")
+                };
+                self.append_to_last_assistant(&line);
+            }
+            crate::wire::types::WireMessage::ToolResult { result, .. } => {
+                let t = result.extract_text();
+                let preview: String = t.chars().take(400).collect();
+                self.append_to_last_assistant(&format!("→ {preview}\n"));
+            }
             crate::wire::types::WireMessage::TextPart { text } => {
-                state.content_block.append(&text);
+                self.append_to_last_assistant(&text);
             }
             crate::wire::types::WireMessage::ThinkPart { thought } => {
-                state.live_events.push(LiveEvent::Think(thought));
+                self.append_to_last_assistant(&format!("[think] {thought}"));
             }
             crate::wire::types::WireMessage::Notification { text } => {
-                state.live_events.push(LiveEvent::Notification(
-                    visualize::NotificationBlock::new("Notification", text, "info"),
-                ));
+                self.add_system_message(text);
             }
             crate::wire::types::WireMessage::McpLoadingBegin => {
-                state.live_events.push(LiveEvent::McpLoading);
+                self.append_to_last_assistant("\n[MCP loading…]\n");
             }
             crate::wire::types::WireMessage::McpLoadingEnd => {
-                state.live_events.push(LiveEvent::McpDone);
+                self.append_to_last_assistant("\n[MCP ready]\n");
+            }
+            crate::wire::types::WireMessage::CompactionBegin => {
+                self.append_to_last_assistant("\n[compacting…]\n");
+            }
+            crate::wire::types::WireMessage::CompactionEnd => {
+                self.append_to_last_assistant("\n[compaction done]\n");
             }
             crate::wire::types::WireMessage::StatusUpdate { snapshot } => {
                 self.status = Some(crate::soul::StatusSnapshot {
@@ -572,7 +612,7 @@ impl ShellUi {
                 description,
                 ..
             } => {
-                state.modal = Some(Modal::Approval {
+                self.modal = Some(Modal::Approval {
                     request_id: id,
                     _tool_call_id: tool_call_id,
                     sender,
@@ -582,7 +622,7 @@ impl ShellUi {
                 });
             }
             crate::wire::types::WireMessage::QuestionRequest { id, items } => {
-                state.modal = Some(Modal::Question {
+                self.modal = Some(Modal::Question {
                     request_id: id,
                     items,
                     current_item: 0,
@@ -595,38 +635,96 @@ impl ShellUi {
         }
     }
 
+    fn handle_shell_slash_command(&mut self, text: &str) -> Option<crate::app::ShellOutcome> {
+        if let Some(cmd_text) = text.strip_prefix('/') {
+            let parts: Vec<&str> = cmd_text.splitn(2, ' ').collect();
+            match parts[0] {
+                "reload" => {
+                    let prefill = parts.get(1).map(|s| s.to_string());
+                    return Some(crate::app::ShellOutcome::Reload {
+                        session_id: None,
+                        prefill_text: prefill,
+                    });
+                }
+                "new" => {
+                    return Some(crate::app::ShellOutcome::Reload {
+                        session_id: None,
+                        prefill_text: None,
+                    });
+                }
+                "login" | "setup" => {
+                    match std::process::Command::new("kimi").arg("login").status() {
+                        Ok(s) if s.success() => {
+                            return Some(crate::app::ShellOutcome::Reload {
+                                session_id: None,
+                                prefill_text: None,
+                            });
+                        }
+                        Ok(s) => self.add_system_message(format!("Login failed with status: {s}")),
+                        Err(e) => self.add_system_message(format!("Failed to run `kimi login`: {e}")),
+                    }
+                    return None;
+                }
+                "logout" => {
+                    match std::process::Command::new("kimi").arg("logout").status() {
+                        Ok(s) if s.success() => {
+                            return Some(crate::app::ShellOutcome::Reload {
+                                session_id: None,
+                                prefill_text: None,
+                            });
+                        }
+                        Ok(s) => self.add_system_message(format!("Logout failed with status: {s}")),
+                        Err(e) => self.add_system_message(format!("Failed to run `kimi logout`: {e}")),
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     async fn handle_modal_key(
         &mut self,
-        state: &mut TurnState,
         key: KeyEvent,
         wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
     ) -> Option<crate::app::ShellOutcome> {
-        match &mut state.modal {
-            Some(Modal::Approval { selected_index, .. }) => {
-                match key.code {
-                    KeyCode::Up => {
-                        *selected_index = selected_index.saturating_sub(1);
-                        None
-                    }
-                    KeyCode::Down => {
-                        *selected_index = (*selected_index + 1).min(3);
-                        None
-                    }
-                    KeyCode::Char('1') => { *selected_index = 0; None }
-                    KeyCode::Char('2') => { *selected_index = 1; None }
-                    KeyCode::Char('3') => { *selected_index = 2; None }
-                    KeyCode::Char('4') => { *selected_index = 3; None }
-                    KeyCode::Enter => {
-                        self.submit_approval(state, wire_tx).await;
-                        None
-                    }
-                    KeyCode::Esc => {
-                        self.cancel_modal(state, wire_tx).await;
-                        None
-                    }
-                    _ => None,
+        match &mut self.modal {
+            Some(Modal::Approval { selected_index, .. }) => match key.code {
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                    None
                 }
-            }
+                KeyCode::Down => {
+                    *selected_index = (*selected_index + 1).min(3);
+                    None
+                }
+                KeyCode::Char('1') => {
+                    *selected_index = 0;
+                    None
+                }
+                KeyCode::Char('2') => {
+                    *selected_index = 1;
+                    None
+                }
+                KeyCode::Char('3') => {
+                    *selected_index = 2;
+                    None
+                }
+                KeyCode::Char('4') => {
+                    *selected_index = 3;
+                    None
+                }
+                KeyCode::Enter => {
+                    self.submit_approval(wire_tx).await;
+                    None
+                }
+                KeyCode::Esc => {
+                    self.cancel_modal(wire_tx).await;
+                    None
+                }
+                _ => None,
+            },
             Some(Modal::Question {
                 items,
                 current_item,
@@ -654,11 +752,11 @@ impl ShellUi {
                         None
                     }
                     KeyCode::Enter => {
-                        self.submit_question(state, wire_tx).await;
+                        self.submit_question(wire_tx).await;
                         None
                     }
                     KeyCode::Esc => {
-                        self.cancel_modal(state, wire_tx).await;
+                        self.cancel_modal(wire_tx).await;
                         None
                     }
                     _ => None,
@@ -668,82 +766,71 @@ impl ShellUi {
         }
     }
 
-    async fn submit_approval(&mut self, state: &mut TurnState, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
-        if let Some(Modal::Approval { request_id, selected_index, .. }) = state.modal.take() {
+    async fn submit_approval(&mut self, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
+        if let Some(Modal::Approval { request_id, selected_index, .. }) = self.modal.take() {
             let response_str = match selected_index {
                 0 => "approve",
                 1 => "approve_for_session",
                 _ => "reject",
-            }.to_string();
-            let _ = wire_tx.send(crate::wire::types::WireMessage::ApprovalResponse {
-                request_id,
-                response: response_str,
-                feedback: None,
-            }).await;
+            }
+            .to_string();
+            let _ = wire_tx
+                .send(crate::wire::types::WireMessage::ApprovalResponse {
+                    request_id,
+                    response: response_str,
+                    feedback: None,
+                })
+                .await;
         }
     }
 
-    async fn submit_question(&mut self, state: &mut TurnState, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
-        if let Some(Modal::Question { request_id, answers, .. }) = state.modal.take() {
-            let _ = wire_tx.send(crate::wire::types::WireMessage::QuestionResponse {
-                request_id,
-                answers: answers.clone(),
-            }).await;
+    async fn submit_question(&mut self, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
+        if let Some(Modal::Question { request_id, answers, .. }) = self.modal.take() {
+            let _ = wire_tx
+                .send(crate::wire::types::WireMessage::QuestionResponse {
+                    request_id,
+                    answers: answers.clone(),
+                })
+                .await;
         }
     }
 
-    async fn cancel_modal(&mut self, state: &mut TurnState, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
-        if let Some(Modal::Approval { request_id, .. }) = state.modal.take() {
-            let _ = wire_tx.send(crate::wire::types::WireMessage::ApprovalResponse {
-                request_id,
-                response: "reject".into(),
-                feedback: None,
-            }).await;
-        } else if let Some(Modal::Question { request_id, .. }) = state.modal.take() {
-            let _ = wire_tx.send(crate::wire::types::WireMessage::QuestionResponse {
-                request_id: request_id.clone(),
-                answers: HashMap::new(),
-            }).await;
+    async fn cancel_modal(&mut self, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
+        if let Some(Modal::Approval { request_id, .. }) = self.modal.take() {
+            let _ = wire_tx
+                .send(crate::wire::types::WireMessage::ApprovalResponse {
+                    request_id,
+                    response: "reject".into(),
+                    feedback: None,
+                })
+                .await;
+        } else if let Some(Modal::Question { request_id, .. }) = self.modal.take() {
+            let _ = wire_tx
+                .send(crate::wire::types::WireMessage::QuestionResponse {
+                    request_id: request_id.clone(),
+                    answers: HashMap::new(),
+                })
+                .await;
         }
     }
 
-    async fn handle_popup_key(
-        &mut self,
-        key: KeyEvent,
-        _cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
-    ) -> Option<crate::app::ShellOutcome> {
+    async fn handle_popup_key(&mut self, key: KeyEvent) -> Option<crate::app::ShellOutcome> {
         match &mut self.popup {
             Some(Popup::Help) => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
-                        self.popup = None;
-                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => self.popup = None,
                     _ => {}
                 }
                 None
             }
             Some(Popup::Replay(events, selected)) => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
-                        self.popup = None;
-                    }
-                    KeyCode::Up => {
-                        *selected = selected.saturating_sub(1);
-                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => self.popup = None,
+                    KeyCode::Up => *selected = selected.saturating_sub(1),
                     KeyCode::Down => {
                         if *selected + 1 < events.len() {
                             *selected += 1;
                         }
-                    }
-                    KeyCode::Enter => {
-                        // Replay selection: append to history as a system note
-                        if let Some(evt) = events.get(*selected) {
-                            self.history.push(HistoryItem {
-                                role: "system",
-                                content: format!("Replay: {evt}"),
-                            });
-                        }
-                        self.popup = None;
                     }
                     _ => {}
                 }
@@ -751,12 +838,8 @@ impl ShellUi {
             }
             Some(Popup::SessionPicker(sessions, selected)) => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
-                        self.popup = None;
-                    }
-                    KeyCode::Up => {
-                        *selected = selected.saturating_sub(1);
-                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => self.popup = None,
+                    KeyCode::Up => *selected = selected.saturating_sub(1),
                     KeyCode::Down => {
                         if *selected + 1 < sessions.len() {
                             *selected += 1;
@@ -765,6 +848,7 @@ impl ShellUi {
                     KeyCode::Enter => {
                         if let Some((session_id, _)) = sessions.get(*selected) {
                             if session_id != "__empty__" {
+                                self.exit = true;
                                 return Some(crate::app::ShellOutcome::Reload {
                                     session_id: Some(session_id.clone()),
                                     prefill_text: None,
@@ -773,44 +857,13 @@ impl ShellUi {
                         }
                         self.popup = None;
                     }
-                    KeyCode::Char('a') | KeyCode::Char('A') => {
-                        // Toggle scope would require state; for now just close
-                        self.popup = None;
-                    }
                     _ => {}
                 }
                 None
             }
-            Some(Popup::TaskList(tasks, selected)) => {
+            Some(Popup::TaskList(_, _)) => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
-                        self.popup = None;
-                    }
-                    KeyCode::Up => {
-                        *selected = selected.saturating_sub(1);
-                    }
-                    KeyCode::Down => {
-                        if *selected + 1 < tasks.len() {
-                            *selected += 1;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(task) = tasks.get(*selected) {
-                            self.history.push(HistoryItem {
-                                role: "system",
-                                content: format!("Task selected: {task}"),
-                            });
-                        }
-                        self.popup = None;
-                    }
-                    KeyCode::Char('r') => {
-                        // Refresh tasks
-                        self.popup = None;
-                    }
-                    KeyCode::Char('s') => {
-                        // Stop selected task would require CLI access
-                        self.popup = None;
-                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => self.popup = None,
                     _ => {}
                 }
                 None
@@ -819,10 +872,10 @@ impl ShellUi {
         }
     }
 
-    async fn gather_replay_events(
-        &self,
-        cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
-    ) -> Vec<String> {
+    async fn gather_replay_events(&self) -> Vec<String> {
+        let Some(ref cli_arc) = self.cli_arc else {
+            return vec!["No CLI available.".into()];
+        };
         let cli_guard = cli_arc.lock().await;
         let Some(cli) = cli_guard.as_ref() else {
             return vec!["No CLI available.".into()];
@@ -831,14 +884,20 @@ impl ShellUi {
         let mut events = Vec::new();
         for record in records.into_iter().rev().take(20) {
             let text = match record {
-                crate::wire::types::WireMessage::TextPart { text } => format!("Text: {}", text.chars().take(60).collect::<String>()),
-                crate::wire::types::WireMessage::ThinkPart { thought } => format!("Think: {}", thought.chars().take(60).collect::<String>()),
+                crate::wire::types::WireMessage::TextPart { text } => {
+                    format!("Text: {}", text.chars().take(60).collect::<String>())
+                }
+                crate::wire::types::WireMessage::ThinkPart { thought } => {
+                    format!("Think: {}", thought.chars().take(60).collect::<String>())
+                }
                 crate::wire::types::WireMessage::ToolCall { name, .. } => format!("ToolCall: {name}"),
-                crate::wire::types::WireMessage::ToolResult { result, .. } => format!("ToolResult: {}", result.extract_text().chars().take(60).collect::<String>()),
+                crate::wire::types::WireMessage::ToolResult { result, .. } => {
+                    format!("ToolResult: {}", result.extract_text().chars().take(60).collect::<String>())
+                }
                 crate::wire::types::WireMessage::StepBegin { step_no } => format!("Step {step_no}"),
                 crate::wire::types::WireMessage::TurnBegin { .. } => "Turn begin".into(),
                 crate::wire::types::WireMessage::Notification { text } => format!("Notify: {text}"),
-                _ => format!("{:?}", record),
+                _ => format!("{record:?}"),
             };
             events.push(text);
         }
@@ -862,10 +921,10 @@ impl ShellUi {
             .collect()
     }
 
-    async fn gather_tasks(
-        &self,
-        cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
-    ) -> Vec<String> {
+    async fn gather_tasks(&self) -> Vec<String> {
+        let Some(ref cli_arc) = self.cli_arc else {
+            return vec!["No CLI available.".into()];
+        };
         let cli_guard = cli_arc.lock().await;
         let Some(cli) = cli_guard.as_ref() else {
             return vec!["No CLI available.".into()];
@@ -882,179 +941,38 @@ impl ShellUi {
         result
     }
 
-    fn draw(
-        &self,
-        frame: &mut ratatui::Frame,
-        state: &TurnState,
-        is_running: bool,
-    ) {
-        let has_modal = state.modal.is_some();
-
-        let has_live = !state.live_events.is_empty() || !state.content_block.is_empty();
-        let live_height = if has_live {
-            let base = state.live_events.len() as u16;
-            let content_lines = if state.content_block.is_empty() { 0 } else { 3u16 };
-            (base + content_lines + 2).min(8)
-        } else {
-            0
-        };
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints([
-                Constraint::Min(3),
-                Constraint::Length(live_height),
-                Constraint::Length(3),
-                Constraint::Length(3),
-            ])
-            .split(frame.area());
-
-        // History
-        let history_text = self
-            .history
-            .iter()
-            .flat_map(|item| {
-                let color = match item.role {
-                    "user" => Color::Cyan,
-                    "assistant" => Color::Green,
-                    "system" => Color::Red,
-                    _ => Color::Gray,
-                };
-                vec![
-                    Line::from(vec![Span::styled(
-                        format!("[{}]", item.role),
-                        Style::default().fg(color).add_modifier(ratatui::style::Modifier::BOLD),
-                    )]),
-                    Line::from(item.content.as_str()),
-                    Line::from(""),
-                ]
-            })
-            .collect::<Vec<_>>();
-
-        let history_paragraph = Paragraph::new(Text::from(history_text))
-            .block(Block::default().title("History").borders(Borders::ALL))
-            .wrap(Wrap { trim: true })
-            .scroll((self.scroll_offset, 0));
-        frame.render_widget(history_paragraph, chunks[0]);
-
-        // Live events
-        let has_live_content = !state.live_events.is_empty() || !state.content_block.is_empty();
-        if has_live_content {
-            let mut live_text: Vec<Line> = Vec::new();
-            if !state.content_block.is_empty() {
-                live_text.extend(state.content_block.render());
-                live_text.push(Line::from(""));
-            }
-            for evt in &state.live_events {
-                match evt {
-                    LiveEvent::StepBegin(n) => live_text.push(Line::from(vec![
-                        Span::styled("Step ", Style::default().fg(Color::Yellow)),
-                        Span::styled(n.to_string(), Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD)),
-                    ])),
-                    LiveEvent::ToolCall(block) => {
-                        live_text.extend(block.render());
-                    }
-                    LiveEvent::Think(t) => live_text.push(Line::from(vec![
-                        Span::styled("Think: ", Style::default().fg(Color::Magenta)),
-                        Span::raw(t),
-                    ])),
-                    LiveEvent::Notification(block) => {
-                        live_text.extend(block.render());
-                    }
-                    LiveEvent::McpLoading => live_text.push(Line::from(vec![
-                        Span::styled("MCP ", Style::default().fg(Color::Cyan)),
-                        Span::raw("loading..."),
-                    ])),
-                    LiveEvent::McpDone => live_text.push(Line::from(vec![
-                        Span::styled("MCP ", Style::default().fg(Color::Green)),
-                        Span::raw("ready"),
-                    ])),
-                }
-            }
-            let live_paragraph = Paragraph::new(Text::from(live_text))
-                .block(Block::default().title("Live").borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
-            frame.render_widget(live_paragraph, chunks[1]);
-        }
-
-        // Status bar
-        let status_idx = if has_live { 2 } else { 1 };
-        let status_text = self.build_status_text(&state);
-        let status_paragraph = Paragraph::new(status_text)
-            .block(Block::default().title("Status").borders(Borders::ALL))
-            .wrap(Wrap { trim: true });
-        frame.render_widget(status_paragraph, chunks[status_idx]);
-
-        // Input
-        let input_idx = if has_live { 3 } else { 2 };
-        let input_text = format!("> {}", self.input);
-        let mut input_title = if self.plan_mode {
-            "Input [PLAN MODE] (Enter=send, Ctrl+C/Esc=quit)"
-        } else {
-            "Input (Enter=send, Ctrl+C/Esc=quit)"
-        };
-        if is_running {
-            input_title = "Running... (Ctrl+C to cancel)";
-        }
-        let input_paragraph = Paragraph::new(input_text)
-            .block(Block::default().title(input_title).borders(Borders::ALL))
-            .wrap(Wrap { trim: true });
-        frame.render_widget(input_paragraph, chunks[input_idx]);
-
-        // Cursor
-        let input_area = chunks[input_idx];
-        let prefix_len = 2u16; // "> "
-        let avail_width = input_area.width.saturating_sub(2);
-        let cursor_pos = self.cursor as u16;
-        let cursor_line = if avail_width == 0 {
-            0
-        } else {
-            (prefix_len + cursor_pos) / avail_width
-        };
-        let cursor_col = (prefix_len + cursor_pos) % avail_width;
-        let cursor_x = (input_area.x + 1 + cursor_col).min(input_area.x + input_area.width - 1);
-        let cursor_y = (input_area.y + 1 + cursor_line).min(input_area.y + input_area.height - 1);
-        frame.set_cursor_position(ratatui::layout::Position::new(cursor_x, cursor_y));
-
-        // Modal overlay
-        if has_modal {
-            let area = Self::centered_rect(60, 40, frame.area());
-            frame.render_widget(Clear, area);
-            self.draw_modal(frame, area, &state);
-        }
-
-        // Popup overlay
-        if let Some(ref popup) = self.popup {
-            let area = Self::centered_rect(70, 50, frame.area());
-            frame.render_widget(Clear, area);
-            self.draw_popup(frame, area, popup);
-        }
-    }
-
     fn draw_popup(&self, frame: &mut ratatui::Frame, area: Rect, popup: &Popup) {
         match popup {
             Popup::Help => {
                 let lines = vec![
-                    Line::from(vec![Span::styled("Shortcuts", Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD))]),
+                    Line::from(vec![Span::styled(
+                        "Shortcuts",
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )]),
                     Line::from(""),
-                    Line::from("Ctrl+C / Esc / Ctrl+Q  Exit shell"),
-                    Line::from("Ctrl+H                  Show this help"),
-                    Line::from("Ctrl+R                  Replay recent events"),
-                    Line::from("Ctrl+S                  Session picker"),
-                    Line::from("Ctrl+T                  Task browser"),
-                    Line::from("Ctrl+L                  Scroll to top"),
-                    Line::from("Ctrl+A                  Move cursor to start"),
-                    Line::from("Ctrl+E                  Move cursor to end"),
-                    Line::from("Ctrl+U                  Clear input"),
-                    Line::from("Ctrl+K                  Clear from cursor to end"),
-                    Line::from("Ctrl+W                  Delete previous word"),
-                    Line::from("Up/Down                 Input history / scroll"),
+                    Line::from("Ctrl+C / Ctrl+Q  空闲：退出 · 助手运行时：第一次取消本轮，第二次退出"),
+                    Line::from("Esc            助手运行时：取消本轮 · 空闲：退出"),
+                    Line::from("Mouse drag     在 Messages 里拖选复制（未启用鼠标捕获）"),
+                    Line::from("PgUp / PgDn    上下滚动对话"),
+                    Line::from("Ctrl+H         Help"),
+                    Line::from("Ctrl+R         Replay recent events"),
+                    Line::from("Ctrl+S         Session picker"),
+                    Line::from("Ctrl+T         Task browser"),
+                    Line::from("Up/Down        Input history"),
+                    Line::from("运行中仍可编辑输入框；须等本轮结束后再按 Enter 发送"),
                     Line::from(""),
-                    Line::from(vec![Span::styled("Press Esc or H to close", Style::default().fg(Color::DarkGray))]),
+                    Line::from(vec![Span::styled(
+                        "Press Esc or H to close",
+                        Style::default().fg(Color::DarkGray),
+                    )]),
                 ];
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default().title("Help").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .block(
+                        Block::default()
+                            .title("Help")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan)),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, area);
             }
@@ -1073,7 +991,12 @@ impl ShellUi {
                     })
                     .collect();
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .block(
+                        Block::default()
+                            .title(title)
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan)),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, area);
             }
@@ -1092,7 +1015,12 @@ impl ShellUi {
                     })
                     .collect();
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .block(
+                        Block::default()
+                            .title(title)
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan)),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, area);
             }
@@ -1111,64 +1039,20 @@ impl ShellUi {
                     })
                     .collect();
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .block(
+                        Block::default()
+                            .title(title)
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan)),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, area);
             }
         }
     }
 
-    fn build_status_text(&self, state: &TurnState) -> Text<'_> {
-        let mut spans = vec![];
-        if let Some(status) = &self.status {
-            let status_str = crate::soul::format_context_status(
-                status.context_usage,
-                status.context_tokens,
-                status.max_context_tokens,
-            );
-            spans.push(Span::raw(status_str));
-            if status.yolo_enabled {
-                spans.push(Span::raw(" | "));
-                spans.push(Span::styled("YOLO", Style::default().fg(Color::Red)));
-            }
-            if let Some(mcp) = &status.mcp_status {
-                spans.push(Span::raw(" | "));
-                spans.push(Span::raw(format!(
-                    "MCP {}/{} conn, {} tools",
-                    mcp.connected, mcp.total, mcp.tools
-                )));
-            }
-        } else {
-            spans.push(Span::raw("Ready"));
-        }
-        if !state.content_block.is_empty() {
-            spans.push(Span::raw(" | "));
-            spans.push(Span::styled("Generating...", Style::default().fg(Color::Green)));
-        }
-        Text::from(Line::from(spans))
-    }
-
-    fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-        let popup_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage((100 - percent_y) / 2),
-                Constraint::Percentage(percent_y),
-                Constraint::Percentage((100 - percent_y) / 2),
-            ])
-            .split(r);
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage((100 - percent_x) / 2),
-                Constraint::Percentage(percent_x),
-                Constraint::Percentage((100 - percent_x) / 2),
-            ])
-            .split(popup_layout[1])[1]
-    }
-
-    fn draw_modal(&self, frame: &mut ratatui::Frame, area: Rect, state: &TurnState) {
-        match &state.modal {
+    fn draw_modal(&self, frame: &mut ratatui::Frame, area: Rect) {
+        match &self.modal {
             Some(Modal::Approval {
                 sender,
                 action,
@@ -1183,11 +1067,12 @@ impl ShellUi {
                     "Reject with feedback",
                 ];
                 let mut lines = vec![
-                    Line::from(vec![
-                        Span::styled("Approval request", Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD)),
-                    ]),
+                    Line::from(vec![Span::styled(
+                        "Approval request",
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )]),
                     Line::from(""),
-                    Line::from(format!("{} wants to {}:", sender, action)),
+                    Line::from(format!("{sender} wants to {action}:")),
                     Line::from(description.as_str()),
                     Line::from(""),
                 ];
@@ -1196,21 +1081,33 @@ impl ShellUi {
                     if i == *selected_index {
                         lines.push(Line::from(vec![
                             Span::styled("> ", Style::default().fg(Color::Cyan)),
-                            Span::styled(format!("[{}] {}", num, opt), Style::default().fg(Color::Cyan)),
+                            Span::styled(
+                                format!("[{num}] {opt}"),
+                                Style::default().fg(Color::Cyan),
+                            ),
                         ]));
                     } else {
                         lines.push(Line::from(vec![
                             Span::raw("  "),
-                            Span::styled(format!("[{}] {}", num, opt), Style::default().fg(Color::Gray)),
+                            Span::styled(
+                                format!("[{num}] {opt}"),
+                                Style::default().fg(Color::Gray),
+                            ),
                         ]));
                     }
                 }
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("1-4 choose, Enter confirm, Esc cancel", Style::default().fg(Color::DarkGray)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "1-4 choose, Enter confirm, Esc cancel",
+                    Style::default().fg(Color::DarkGray),
+                )]));
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default().title("Approval").borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)))
+                    .block(
+                        Block::default()
+                            .title("Approval")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Yellow)),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, area);
             }
@@ -1222,11 +1119,10 @@ impl ShellUi {
                 ..
             }) => {
                 let q = &items[*current_item];
-                let mut lines = vec![
-                    Line::from(vec![
-                        Span::styled(format!("? {}", q.question), Style::default().fg(Color::Yellow)),
-                    ]),
-                ];
+                let mut lines = vec![Line::from(vec![Span::styled(
+                    format!("? {}", q.question),
+                    Style::default().fg(Color::Yellow),
+                )])];
                 if q.multi_select {
                     lines.push(Line::from("(SPACE to toggle, ENTER to submit)"));
                 }
@@ -1234,7 +1130,11 @@ impl ShellUi {
                 let option_count = q.options.len() + 1;
                 for (i, opt) in q.options.iter().enumerate() {
                     let prefix = if q.multi_select {
-                        if multi_selected.contains(&i) { "[x] " } else { "[ ] " }
+                        if multi_selected.contains(&i) {
+                            "[x] "
+                        } else {
+                            "[ ] "
+                        }
                     } else if i == *selected_index {
                         "> "
                     } else {
@@ -1246,13 +1146,20 @@ impl ShellUi {
                         Style::default().fg(Color::Gray)
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{}{}", prefix, opt.label), style),
-                        Span::styled(format!(" - {}", opt.description), Style::default().fg(Color::DarkGray)),
+                        Span::styled(format!("{prefix}{}", opt.label), style),
+                        Span::styled(
+                            format!(" - {}", opt.description),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]));
                 }
                 let other_idx = option_count - 1;
                 let prefix = if q.multi_select {
-                    if multi_selected.contains(&other_idx) { "[x] " } else { "[ ] " }
+                    if multi_selected.contains(&other_idx) {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    }
                 } else if other_idx == *selected_index {
                     "> "
                 } else {
@@ -1263,21 +1170,44 @@ impl ShellUi {
                 } else {
                     Style::default().fg(Color::Gray)
                 };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{}Other", prefix), style),
-                ]));
+                lines.push(Line::from(vec![Span::styled(format!("{}Other", prefix), style)]));
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("Enter submit, Esc cancel", Style::default().fg(Color::DarkGray)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "Enter submit, Esc cancel",
+                    Style::default().fg(Color::DarkGray),
+                )]));
                 let paragraph = Paragraph::new(Text::from(lines))
-                    .block(Block::default().title("Question").borders(Borders::ALL).border_style(Style::default().fg(Color::Gray)))
+                    .block(
+                        Block::default()
+                            .title("Question")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Gray)),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(paragraph, area);
             }
             None => {}
         }
     }
+}
+
+fn centered_rect_percent(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 #[cfg(test)]
@@ -1287,51 +1217,12 @@ mod tests {
     #[test]
     fn shell_ui_default() {
         let ui = ShellUi::default();
-        assert!(ui.history.is_empty());
-        assert!(ui.input.is_empty());
+        assert!(ui.messages.is_empty());
     }
 
     #[test]
-    fn shell_ui_history_push() {
-        let mut ui = ShellUi::default();
-        ui.history.push(HistoryItem {
-            role: "user",
-            content: "hello".into(),
-        });
-        assert_eq!(ui.history.len(), 1);
-    }
-
-    #[test]
-    fn shell_ui_cursor_movement() {
-        let mut ui = ShellUi::default();
-        ui.input = "hello".into();
-        ui.cursor = 5;
-        // Simulate Left
-        ui.cursor = ui.cursor.saturating_sub(1);
-        assert_eq!(ui.cursor, 4);
-        // Simulate Home
-        ui.cursor = 0;
-        assert_eq!(ui.cursor, 0);
-        // Simulate End
-        ui.cursor = ui.input.len();
-        assert_eq!(ui.cursor, 5);
-    }
-
-    #[test]
-    fn shell_ui_input_history_navigation() {
-        let mut ui = ShellUi::default();
-        ui.input_history = vec!["first".into(), "second".into()];
-        // Up loads latest history
-        let idx = ui.input_history_index.unwrap_or(ui.input_history.len() - 1);
-        ui.input = ui.input_history[idx].clone();
-        ui.cursor = ui.input.len();
-        ui.input_history_index = Some(idx);
-        assert_eq!(ui.input, "second");
-        // Another up loads earlier
-        let idx2 = ui.input_history_index.map(|i| i.saturating_sub(1)).unwrap_or(0);
-        ui.input = ui.input_history[idx2].clone();
-        ui.cursor = ui.input.len();
-        ui.input_history_index = Some(idx2);
-        assert_eq!(ui.input, "first");
+    fn welcome_message_ported() {
+        let w = repl::welcome_message();
+        assert!(w.text.starts_with(repl::WELCOME_TEXT_PREFIX));
     }
 }

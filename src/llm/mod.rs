@@ -200,9 +200,21 @@ impl Llm {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(crate::error::KimiCliError::Generic(
-                format!("LLM request failed: HTTP {status} - {body}"),
-            ));
+            tracing::warn!(
+                url = %url,
+                model = %self.model_name,
+                status = status.as_u16(),
+                "LLM HTTP error"
+            );
+            let mut msg = format!("LLM request failed: HTTP {status} - {body}");
+            if status == reqwest::StatusCode::NOT_FOUND || body.contains("resource_not_found") {
+                msg.push_str(
+                    "\n\nHint: (1) `base_url` should be the API host only, e.g. `https://api.moonshot.cn` — \
+not `.../v1` (otherwise the client calls `.../v1/v1/chat/completions` and gets 404). \
+(2) Check `model` in ~/.kimi/config.toml matches a model id your key can use.",
+                );
+            }
+            return Err(crate::error::KimiCliError::Generic(msg));
         }
 
         let chat_response: ChatResponse = response
@@ -522,7 +534,15 @@ pub async fn create_llm(
         capabilities.insert(ModelCapability::Thinking);
     }
 
-    let base_url = augment_base_url_with_env(&provider.base_url, provider_type);
+    let base_url_raw = augment_base_url_with_env(&provider.base_url, provider_type);
+    let base_url = if matches!(
+        provider_type,
+        ProviderType::Echo | ProviderType::ScriptedEcho | ProviderType::Chaos
+    ) {
+        base_url_raw
+    } else {
+        normalize_llm_base_url(&base_url_raw)
+    };
     let api_key = augment_api_key_with_env(&provider.api_key, provider_type);
 
     Ok(Some(Llm {
@@ -583,6 +603,21 @@ pub fn derive_model_capabilities(model: &crate::config::LlmModel) -> HashSet<Mod
     caps
 }
 
+/// Strips trailing `/` and a trailing `/v1` so we do not build `.../v1/v1/chat/completions`.
+fn normalize_llm_base_url(base: &str) -> String {
+    let mut s = base.trim().to_string();
+    while s.ends_with('/') {
+        s.pop();
+    }
+    if s.ends_with("/v1") {
+        s.truncate(s.len() - 3);
+        while s.ends_with('/') {
+            s.pop();
+        }
+    }
+    s
+}
+
 fn augment_base_url_with_env(base_url: &str, provider_type: ProviderType) -> String {
     let env_var = match provider_type {
         ProviderType::Kimi => "KIMI_BASE_URL",
@@ -605,4 +640,37 @@ fn augment_api_key_with_env(api_key: &secrecy::SecretString, provider_type: Prov
     std::env::var(env_var)
         .map(|v| secrecy::SecretString::new(v.into()))
         .unwrap_or_else(|_| api_key.clone())
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::normalize_llm_base_url;
+
+    #[test]
+    fn normalize_strips_trailing_slash() {
+        assert_eq!(
+            normalize_llm_base_url("https://api.moonshot.cn/"),
+            "https://api.moonshot.cn"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_v1_suffix() {
+        assert_eq!(
+            normalize_llm_base_url("https://api.moonshot.cn/v1"),
+            "https://api.moonshot.cn"
+        );
+        assert_eq!(
+            normalize_llm_base_url("https://api.moonshot.cn/v1/"),
+            "https://api.moonshot.cn"
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_host_only() {
+        assert_eq!(
+            normalize_llm_base_url("https://api.moonshot.cn"),
+            "https://api.moonshot.cn"
+        );
+    }
 }

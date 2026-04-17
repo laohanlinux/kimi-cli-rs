@@ -1,0 +1,28 @@
+{
+  "task": "kimi-cli-rs Rust translation",
+  "phase": 11,
+  "current_focus": "utils/io.rs -> plugin/manager + integration -> soul/agent.rs post-init",
+  "last_completed_modules": [
+    "src/ui/shell/mod.rs (input history, cursor movement, readline shortcuts)",
+    "src/background/store.rs (task persistence)",
+    "src/background/manager.rs (store integration)",
+    "src/vis/mod.rs",
+    "src/vis/api/mod.rs",
+    "src/notifications/manager.rs",
+    "src/acp/mod.rs",
+    "src/wire/server.rs",
+    "src/web/runner/mod.rs",
+    "src/web/store/mod.rs",
+    "src/web/api/mod.rs (websocket stream integration)",
+    "src/cli/mod.rs (full command dispatch)",
+    "src/main.rs (refactored to use cli::run)"
+  ],
+  "remaining_modules": [
+    "src/utils/io.rs",
+    "src/plugin/manager.rs + integration",
+    "src/soul/agent.rs post-init bindings"
+  ],
+  "checkpoint_file": "checkpoints/latest.json",
+  "notes": "All tests passing (85 unit + 5 integration). cargo check clean.",
+  "timestamp": "2026-04-17T00:20:00+08:00"
+}
