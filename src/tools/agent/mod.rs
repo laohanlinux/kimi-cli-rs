@@ -9,12 +9,12 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(runtime: crate::soul::agent::Runtime) -> Self {
-        let description = Self::build_description(&runtime);
+    pub async fn new(runtime: crate::soul::agent::Runtime) -> Self {
+        let description = Self::build_description(&runtime).await;
         Self { description }
     }
 
-    fn build_description(runtime: &crate::soul::agent::Runtime) -> String {
+    async fn build_description(runtime: &crate::soul::agent::Runtime) -> String {
         let mut lines = vec![
             "Start a subagent instance to work on a focused task.".into(),
             "".into(),
@@ -26,7 +26,7 @@ impl Agent {
             "".into(),
         ];
 
-        let rt = runtime.labor_market.blocking_read();
+        let rt = runtime.labor_market.read().await;
         for (name, type_def) in &rt.builtin_types {
             let tool_names = if type_def.tool_policy.mode == crate::subagents::labor_market::ToolPolicyMode::Inherit {
                 "*".into()

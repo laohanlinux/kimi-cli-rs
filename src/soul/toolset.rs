@@ -87,13 +87,10 @@ impl Default for KimiToolset {
 impl std::fmt::Debug for KimiToolset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let keys: Vec<_> = {
-            let rt = tokio::runtime::Handle::try_current();
-            match rt {
-                Ok(_) => {
-                    // Best-effort blocking read of the keys.
-                    self.tools.blocking_read().keys().cloned().collect()
-                }
-                Err(_) => Vec::new(),
+            if let Ok(guard) = self.tools.try_read() {
+                guard.keys().cloned().collect()
+            } else {
+                Vec::new()
             }
         };
         f.debug_struct("KimiToolset")
@@ -110,7 +107,9 @@ impl KimiToolset {
     }
 
     pub fn add_sync(&self, tool: Arc<dyn Tool>) {
-        self.tools.blocking_write().insert(tool.name().to_string(), tool);
+        if let Ok(mut guard) = self.tools.try_write() {
+            guard.insert(tool.name().to_string(), tool);
+        }
     }
 
     pub fn hide(&mut self, name: &str) {
@@ -303,8 +302,8 @@ impl KimiToolset {
     }
 
     /// Returns true when MCP loading is configured but has not started yet.
-    pub fn has_deferred_mcp_tools(&self) -> bool {
-        self.deferred_mcp_load.blocking_lock().is_some()
+    pub async fn has_deferred_mcp_tools(&self) -> bool {
+        self.deferred_mcp_load.lock().await.is_some()
     }
 
     /// Starts any deferred MCP loading in the background.
@@ -358,7 +357,7 @@ impl KimiToolset {
 
     /// Returns a read-only snapshot of current MCP startup state.
     pub fn mcp_status_snapshot(&self) -> Option<crate::mcp::server::McpStatusSnapshot> {
-        let servers = self.mcp_servers.blocking_read();
+        let servers = self.mcp_servers.try_read().ok()?;
         if servers.is_empty() {
             return None;
         }
@@ -409,7 +408,7 @@ impl KimiToolset {
 
     /// Returns the underlying tool map (blocking).
     pub fn tools_sync(&self) -> HashMap<String, Arc<dyn Tool>> {
-        self.tools.blocking_read().clone()
+        self.tools.try_read().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Looks up a tool and executes it.
@@ -432,10 +431,12 @@ impl KimiToolset {
             let guard = self.tools.read().await;
             guard.get(&tool_call.name).cloned()
         };
-        let tool = tool.or_else(|| {
-            let guard = self.external_tools.blocking_read();
+        let tool = if let Some(t) = tool {
+            Some(t)
+        } else {
+            let guard = self.external_tools.read().await;
             guard.get(&tool_call.name).cloned()
-        });
+        };
 
         let Some(tool) = tool else {
             return crate::soul::message::ToolResult {

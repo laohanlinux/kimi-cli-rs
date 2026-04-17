@@ -375,7 +375,7 @@ impl Runtime {
                 ar.bind_root_wire_hub(rwh);
             }
         }
-        background_tasks.bind_runtime(&runtime);
+        background_tasks.bind_runtime(&runtime).await;
 
         Ok(runtime)
     }
@@ -479,7 +479,7 @@ pub async fn load_agent(
 
     // Add the Agent tool if requested and not excluded.
     if tools.contains(&"Agent".to_string()) && !agent_spec.exclude_tools.contains(&"Agent".to_string()) {
-        toolset.add(Arc::new(crate::tools::agent::Agent::new(runtime.clone()))).await;
+        toolset.add(Arc::new(crate::tools::agent::Agent::new(runtime.clone()).await)).await;
     }
 
     let mut plugin_manager = crate::plugin::manager::PluginManager::default();

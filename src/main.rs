@@ -3,16 +3,7 @@
 /// Main entrypoint for the Kimi CLI.
 #[tokio::main]
 #[tracing::instrument(level = "info")]
-async fn main() {
-    if let Err(e) = _main().await {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    }
-}
-
-async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
-    let args = kimi_cli_rs::cli::parse();
-
+async fn main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
     // Initialize tracing subscriber.
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(
@@ -20,12 +11,13 @@ async fn _main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
-
+    if let Err(err) = tracing::subscriber::set_global_default(subscriber) {
+        // Don't panic during startup if another global subscriber was already installed.
+        eprintln!("Warning: failed to set global tracing subscriber: {err}");
+    }
+    let args = kimi_cli_rs::cli::parse();
     if args.debug {
         tracing::info!("Debug logging enabled");
     }
-
     kimi_cli_rs::cli::run(&args).await
 }

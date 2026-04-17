@@ -59,12 +59,18 @@ impl BackgroundTask {
 
     /// Returns true if the task is still running (blocking).
     pub fn is_running_blocking(&self) -> bool {
-        *self.running.blocking_lock()
+        match self.running.try_lock() {
+            Ok(guard) => *guard,
+            Err(_) => false,
+        }
     }
 
     /// Returns the exit code (blocking).
     pub fn exit_code_blocking(&self) -> Option<i32> {
-        *self.exit_code.blocking_lock()
+        match self.exit_code.try_lock() {
+            Ok(guard) => *guard,
+            Err(_) => None,
+        }
     }
 }
 
@@ -88,9 +94,9 @@ impl Default for BackgroundTaskManager {
 
 impl BackgroundTaskManager {
     /// Binds the runtime configuration to the manager.
-    pub fn bind_runtime(&mut self, runtime: &crate::soul::agent::Runtime) {
+    pub async fn bind_runtime(&mut self, runtime: &crate::soul::agent::Runtime) {
         let max = runtime.config.background.max_running_tasks;
-        *self.max_running_tasks.blocking_lock() = max;
+        *self.max_running_tasks.lock().await = max;
         let store_dir = runtime.session.dir().join("background");
         self.store = Some(Arc::new(crate::background::store::BackgroundTaskStore::new(&store_dir)));
         tracing::debug!(max_running_tasks = max, dir = %store_dir.display(), "bound runtime to background manager");
@@ -349,11 +355,13 @@ impl BackgroundTaskManager {
         let all = self.list(false).await;
         let cutoff = std::time::SystemTime::now()
             - std::time::Duration::from_millis(before_claim_ms);
-        all.into_iter()
-            .filter(|t| {
-                t.is_running_blocking() && t.created_at < cutoff
-            })
-            .collect()
+        let mut result = Vec::new();
+        for t in all {
+            if t.is_running().await && t.created_at < cutoff {
+                result.push(t);
+            }
+        }
+        result
     }
 
     /// Formats a single task for display.

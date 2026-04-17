@@ -133,7 +133,10 @@ impl ShellUi {
         let mut outcome_rx_opt: Option<tokio::sync::oneshot::Receiver<crate::error::Result<crate::soul::TurnOutcome>>> = None;
 
         loop {
-            terminal.draw(|f| self.draw(f, &turn_state, &running))?;
+            let state_guard = turn_state.lock().await;
+            let is_running = *running.lock().await;
+            terminal.draw(|f| self.draw(f, &state_guard, is_running))?;
+            drop(state_guard);
 
             let event_fut = tokio::task::spawn_blocking(|| crossterm::event::read());
 
@@ -444,6 +447,58 @@ impl ShellUi {
                         session_id: None,
                         prefill_text: None,
                     });
+                }
+                "login" | "setup" => {
+                    let status = std::process::Command::new("kimi")
+                        .arg("login")
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            return Some(crate::app::ShellOutcome::Reload {
+                                session_id: None,
+                                prefill_text: None,
+                            });
+                        }
+                        Ok(s) => {
+                            self.history.push(HistoryItem {
+                                role: "system",
+                                content: format!("Login failed with status: {s}"),
+                            });
+                        }
+                        Err(e) => {
+                            self.history.push(HistoryItem {
+                                role: "system",
+                                content: format!("Failed to run `kimi login`: {e}"),
+                            });
+                        }
+                    }
+                    return None;
+                }
+                "logout" => {
+                    let status = std::process::Command::new("kimi")
+                        .arg("logout")
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {
+                            return Some(crate::app::ShellOutcome::Reload {
+                                session_id: None,
+                                prefill_text: None,
+                            });
+                        }
+                        Ok(s) => {
+                            self.history.push(HistoryItem {
+                                role: "system",
+                                content: format!("Logout failed with status: {s}"),
+                            });
+                        }
+                        Err(e) => {
+                            self.history.push(HistoryItem {
+                                role: "system",
+                                content: format!("Failed to run `kimi logout`: {e}"),
+                            });
+                        }
+                    }
+                    return None;
                 }
                 _ => {}
             }
@@ -819,23 +874,20 @@ impl ShellUi {
         if tasks.is_empty() {
             return vec!["No background tasks.".into()];
         }
-        tasks
-            .into_iter()
-            .map(|t| {
-                let status = if t.is_running_blocking() { "running" } else { "done" };
-                format!("[{}] {} · {}", status, t.command, t.id)
-            })
-            .collect()
+        let mut result = Vec::new();
+        for t in tasks {
+            let status = if t.is_running().await { "running" } else { "done" };
+            result.push(format!("[{}] {} · {}", status, t.command, t.id));
+        }
+        result
     }
 
     fn draw(
         &self,
         frame: &mut ratatui::Frame,
-        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
-        running: &Arc<tokio::sync::Mutex<bool>>,
+        state: &TurnState,
+        is_running: bool,
     ) {
-        let state = turn_state.blocking_lock();
-        let is_running = *running.blocking_lock();
         let has_modal = state.modal.is_some();
 
         let has_live = !state.live_events.is_empty() || !state.content_block.is_empty();

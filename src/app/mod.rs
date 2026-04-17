@@ -47,7 +47,7 @@ impl KimiCLI {
 
         let oauth = crate::auth::oauth::OAuthManager::default();
 
-        let (model, provider) = if let Some(name) = model_name {
+        let (model, mut provider) = if let Some(name) = model_name {
             config
                 .models
                 .get(name)
@@ -79,6 +79,10 @@ impl KimiCLI {
             )
         });
 
+        if let Some(resolved_key) = oauth.resolve_api_key(&provider.api_key, provider.oauth.as_ref()).await {
+            provider.api_key = resolved_key;
+        }
+
         let thinking = thinking.unwrap_or(config.default_thinking);
         let yolo = yolo || config.default_yolo;
         let _plan_mode = if resumed { plan_mode } else { plan_mode || config.default_plan_mode };
@@ -103,8 +107,9 @@ impl KimiCLI {
             vec![global_mcp_config]
         };
 
+        let default_agent = crate::agentspec::default_agent_file();
         let agent = crate::soul::agent::load_agent(
-            agent_file.unwrap_or_else(|| Path::new("AGENTS.md")),
+            agent_file.unwrap_or(&default_agent),
             &runtime,
             mcp_configs,
             false,

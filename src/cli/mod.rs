@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use std::io::IsTerminal;
+use std::io::Read;
 use std::path::PathBuf;
 
 /// Custom exit codes.
@@ -127,6 +129,8 @@ pub enum Command {
     },
     /// Toad mode easter egg.
     Toad,
+    /// Login to your Kimi account (delegates to the Python CLI).
+    Login,
     /// Manage MCP server configurations.
     #[command(subcommand)]
     Mcp(crate::mcp::cli::McpCommand),
@@ -157,12 +161,8 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
     std::fs::create_dir_all(&_logs_dir).ok();
 
     match &args.command {
-        Some(Command::Shell { command }) => {
-            run_shell_mode(args, &config, command.clone()).await
-        }
-        Some(Command::Print { command }) => {
-            run_print_mode(args, &config, command).await
-        }
+        Some(Command::Shell { command }) => run_shell_mode(args, &config, command.clone()).await,
+        Some(Command::Print { command }) => run_print_mode(args, &config, command).await,
         Some(Command::Acp) => {
             let work_dir = std::env::current_dir()?;
             let session = match crate::session::continue_(work_dir.clone()).await {
@@ -218,7 +218,11 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
             if session.context_file.exists() {
                 std::fs::copy(&session.context_file, &export_path)?;
             }
-            println!("Exported session {} to {}", session_id, export_path.display());
+            println!(
+                "Exported session {} to {}",
+                session_id,
+                export_path.display()
+            );
             Ok(())
         }
         Some(Command::Import { target }) => {
@@ -253,8 +257,14 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
             println!("Share dir: {}", share_dir.display());
             println!("Working dir: {}", std::env::current_dir()?.display());
             println!("Default model: {}", config.default_model);
-            println!("YOLO mode: {}", if args.yolo { "enabled" } else { "disabled" });
-            println!("Plan mode: {}", if args.plan { "enabled" } else { "disabled" });
+            println!(
+                "YOLO mode: {}",
+                if args.yolo { "enabled" } else { "disabled" }
+            );
+            println!(
+                "Plan mode: {}",
+                if args.plan { "enabled" } else { "disabled" }
+            );
             Ok(())
         }
         Some(Command::Plugin { list }) => {
@@ -266,7 +276,10 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
                         for entry in entries.flatten() {
                             let path = entry.path();
                             if path.is_dir() {
-                                println!("{}", path.file_name().unwrap_or_default().to_string_lossy());
+                                println!(
+                                    "{}",
+                                    path.file_name().unwrap_or_default().to_string_lossy()
+                                );
                                 count += 1;
                             }
                         }
@@ -289,13 +302,55 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
             println!("🐸 Toad says: Ribbit ribbit!");
             Ok(())
         }
-        Some(Command::Mcp(mcp_cmd)) => {
-            crate::mcp::cli::run(mcp_cmd.clone()).await
+        Some(Command::Login) => {
+            let status = std::process::Command::new("kimi")
+                .arg("login")
+                .status()?;
+            if !status.success() {
+                return Err(crate::error::KimiCliError::Generic(
+                    "Login failed. Make sure the Python `kimi` CLI is installed and in PATH.".into(),
+                ));
+            }
+            Ok(())
         }
-        None => {
-            run_shell_mode(args, &config, None).await
-        }
+        Some(Command::Mcp(mcp_cmd)) => crate::mcp::cli::run(mcp_cmd.clone()).await,
+        None => run_default_mode(args, &config).await,
     }
+}
+
+async fn run_default_mode(args: &Cli, config: &crate::config::Config) -> crate::error::Result<()> {
+    let stdin_is_tty = std::io::stdin().is_terminal();
+    let stdout_is_tty = std::io::stdout().is_terminal();
+
+    if stdin_is_tty && stdout_is_tty {
+        return run_shell_mode(args, config, None).await;
+    }
+
+    let mut piped_prompt = String::new();
+    std::io::stdin().read_to_string(&mut piped_prompt)?;
+    let piped_prompt = piped_prompt.trim().to_string();
+
+    if !piped_prompt.is_empty() {
+        return run_print_mode(args, config, &[piped_prompt]).await;
+    }
+
+    eprintln!(
+        "Non-interactive environment detected. Use `kimi print <prompt>` or pipe a prompt via stdin."
+    );
+    let mut cmd = Cli::command();
+    cmd.print_help()?;
+    eprintln!();
+    Ok(())
+}
+
+fn ensure_interactive_tty(stdin_is_tty: bool, stdout_is_tty: bool) -> crate::error::Result<()> {
+    if !stdin_is_tty || !stdout_is_tty {
+        return Err(crate::error::KimiCliError::Generic(
+            "interactive shell mode requires a TTY; use `kimi print <prompt>` for non-interactive runs"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn run_shell_mode(
@@ -303,6 +358,11 @@ async fn run_shell_mode(
     config: &crate::config::Config,
     command_override: Option<String>,
 ) -> crate::error::Result<()> {
+    ensure_interactive_tty(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    )?;
+
     let work_dir = std::env::current_dir()?;
     let mut session = match crate::session::continue_(work_dir.clone()).await {
         Some(s) => s,
@@ -387,4 +447,38 @@ async fn run_print_mode(
         tracing::warn!("No command provided for print mode");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_interactive_tty;
+    use crate::error::KimiCliError;
+
+    #[test]
+    fn ensure_interactive_tty_allows_tty_streams() {
+        let result = ensure_interactive_tty(true, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn ensure_interactive_tty_rejects_non_tty_stdin() {
+        let err = ensure_interactive_tty(false, true).expect_err("stdin non-tty should fail");
+        match err {
+            KimiCliError::Generic(msg) => {
+                assert!(msg.contains("requires a TTY"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn ensure_interactive_tty_rejects_non_tty_stdout() {
+        let err = ensure_interactive_tty(true, false).expect_err("stdout non-tty should fail");
+        match err {
+            KimiCliError::Generic(msg) => {
+                assert!(msg.contains("requires a TTY"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
 }

@@ -116,6 +116,24 @@ pub fn default_registry() -> SlashCommandRegistry {
         handler: Box::new(|soul, args| Box::pin(cmd_import(soul, args))),
     });
 
+    registry.register(SlashCommand {
+        name: "login".into(),
+        description: "Login to your Kimi account (delegates to the Python CLI)".into(),
+        handler: Box::new(|_soul, _args| Box::pin(cmd_login())),
+    });
+
+    registry.register(SlashCommand {
+        name: "setup".into(),
+        description: "Alias for /login".into(),
+        handler: Box::new(|_soul, _args| Box::pin(cmd_login())),
+    });
+
+    registry.register(SlashCommand {
+        name: "logout".into(),
+        description: "Logout from your Kimi account (delegates to the Python CLI)".into(),
+        handler: Box::new(|_soul, _args| Box::pin(cmd_logout())),
+    });
+
     registry
 }
 
@@ -396,6 +414,40 @@ async fn cmd_import(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
             }
         } else {
             tracing::warn!("Import target not found: {}", target);
+        }
+    }
+}
+
+async fn cmd_login() {
+    match tokio::task::spawn_blocking(|| std::process::Command::new("kimi").arg("login").status()).await {
+        Ok(Ok(status)) if status.success() => {
+            tracing::info!("Login succeeded; reload the shell to pick up the new config.");
+        }
+        Ok(Ok(status)) => {
+            tracing::warn!("Login failed with status: {}", status);
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("Failed to run `kimi login`: {}", e);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to spawn login task: {}", e);
+        }
+    }
+}
+
+async fn cmd_logout() {
+    match tokio::task::spawn_blocking(|| std::process::Command::new("kimi").arg("logout").status()).await {
+        Ok(Ok(status)) if status.success() => {
+            tracing::info!("Logout succeeded; reload the shell to pick up the new config.");
+        }
+        Ok(Ok(status)) => {
+            tracing::warn!("Logout failed with status: {}", status);
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("Failed to run `kimi logout`: {}", e);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to spawn logout task: {}", e);
         }
     }
 }

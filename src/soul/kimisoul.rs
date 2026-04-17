@@ -739,7 +739,7 @@ impl KimiSoul {
     }
 
     pub async fn start_background_mcp_loading(&mut self) -> bool {
-        if self.agent.toolset.has_deferred_mcp_tools() {
+        if self.agent.toolset.has_deferred_mcp_tools().await {
             self.publish_wire(crate::wire::types::WireMessage::McpLoadingBegin);
             let started = self.agent.toolset.start_background_mcp_loading();
             if !started {
@@ -753,7 +753,7 @@ impl KimiSoul {
 
     pub async fn wait_for_background_mcp_loading(&mut self) {
         if self.agent.toolset.has_pending_mcp_tools()
-            || self.agent.toolset.has_deferred_mcp_tools()
+            || self.agent.toolset.has_deferred_mcp_tools().await
         {
             self.agent.toolset.wait_for_background_mcp_loading().await;
             self.publish_wire(crate::wire::types::WireMessage::McpLoadingEnd);

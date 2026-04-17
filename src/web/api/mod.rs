@@ -378,6 +378,12 @@ async fn generate_title_with_llm(req: &GenerateTitleRequest) -> crate::error::Re
         )
     });
 
+    let oauth = crate::auth::oauth::OAuthManager::default();
+    let mut provider = provider;
+    if let Some(resolved_key) = oauth.resolve_api_key(&provider.api_key, provider.oauth.as_ref()).await {
+        provider.api_key = resolved_key;
+    }
+
     let llm = match crate::llm::create_llm(&provider, &model, None, None).await? {
         Some(l) => l,
         None => return Ok(String::new()),
