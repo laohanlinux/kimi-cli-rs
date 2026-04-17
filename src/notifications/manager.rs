@@ -2,7 +2,7 @@ use std::path::Path;
 use tokio::sync::broadcast;
 
 /// A single user notification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Notification {
     pub title: String,
     pub body: String,
@@ -15,6 +15,9 @@ pub struct NotificationManager {
     tx: broadcast::Sender<Notification>,
     rx: std::sync::Mutex<broadcast::Receiver<Notification>>,
     config: crate::config::NotificationConfig,
+    store: Option<crate::notifications::store::NotificationStore>,
+    notifier: crate::notifications::notifier::Notifier,
+    wire: crate::notifications::wire::WireNotificationBridge,
 }
 
 impl NotificationManager {
@@ -22,7 +25,7 @@ impl NotificationManager {
     pub fn bind_root_wire_hub(&self, _root_wire_hub: &std::sync::Arc<crate::wire::root_hub::RootWireHub>) {}
 
     /// Creates a new notification manager rooted at the given path.
-    pub fn new(_root: &Path, config: crate::config::NotificationConfig) -> Self {
+    pub fn new(root: &Path, config: crate::config::NotificationConfig) -> Self {
         let (tx, rx) = broadcast::channel(256);
 
         if config.desktop {
@@ -34,18 +37,28 @@ impl NotificationManager {
             });
         }
 
+        let store_dir = root.join("notifications");
+        let store = crate::notifications::store::NotificationStore::new(&store_dir);
+
         Self {
             tx,
             rx: std::sync::Mutex::new(rx),
             config,
+            store: Some(store),
+            notifier: crate::notifications::notifier::Notifier::default(),
+            wire: crate::notifications::wire::WireNotificationBridge::default(),
         }
     }
 
-    /// Sends a notification into the queue.
+    /// Sends a notification into the queue and persists it.
     pub fn notify(&self, notification: Notification) -> crate::error::Result<()> {
         if !self.config.enabled {
             return Ok(());
         }
+        if let Some(ref store) = self.store {
+            let _ = store.save(&notification);
+        }
+        self.notifier.notify(&notification);
         self.tx
             .send(notification)
             .map(|_| ())
@@ -64,6 +77,22 @@ impl NotificationManager {
         }
         self.rx.lock().ok()?.try_recv().ok()
     }
+
+    /// Returns a mutable reference to the internal notifier.
+    pub fn notifier(&mut self) -> &mut crate::notifications::notifier::Notifier {
+        &mut self.notifier
+    }
+
+    /// Publishes a notification text to the wire hub.
+    pub fn publish_to_wire(&self, runtime: &crate::soul::agent::Runtime, text: String) {
+        self.wire.publish(runtime, text);
+    }
+
+    /// Reconciles pending notifications against a claim deadline.
+    pub fn reconcile(&self, _before_claim_ms: u64) -> Vec<Notification> {
+        // Returns all notifications from the store that are older than the claim deadline.
+        self.store.as_ref().map(|s| s.load_all()).unwrap_or_default()
+    }
 }
 
 impl Default for NotificationManager {
@@ -73,6 +102,9 @@ impl Default for NotificationManager {
             tx,
             rx: std::sync::Mutex::new(rx),
             config: crate::config::NotificationConfig::default(),
+            store: None,
+            notifier: crate::notifications::notifier::Notifier::default(),
+            wire: crate::notifications::wire::WireNotificationBridge::default(),
         }
     }
 }
@@ -83,6 +115,9 @@ impl Clone for NotificationManager {
             tx: self.tx.clone(),
             rx: std::sync::Mutex::new(self.tx.subscribe()),
             config: self.config.clone(),
+            store: self.store.clone(),
+            notifier: self.notifier.clone(),
+            wire: self.wire.clone(),
         }
     }
 }

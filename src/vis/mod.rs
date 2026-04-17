@@ -39,5 +39,7 @@ pub fn router() -> Router {
         .route("/api/sessions/:id/wire", get(api::get_wire_events))
         .route("/traces", get(api::list_traces))
         .route("/metrics", get(api::metrics))
+        .route("/api/statistics", get(api::statistics))
+        .route("/api/system", get(api::system_info))
         .fallback(api::spa_fallback)
 }

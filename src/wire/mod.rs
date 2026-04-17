@@ -1,4 +1,5 @@
 pub mod file;
+pub mod jsonrpc;
 pub mod root_hub;
 pub mod server;
 pub mod types;

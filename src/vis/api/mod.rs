@@ -187,6 +187,34 @@ setInterval(() => { loadMetrics(); loadSessions(); }, 10000);
     )
 }
 
+/// Returns statistics about sessions and traces.
+#[tracing::instrument(level = "debug")]
+pub async fn statistics() -> Json<serde_json::Value> {
+    let sessions = crate::session::list_all().await;
+    let active = sessions.iter().filter(|s| !s.state.archived).count();
+    let archived = sessions.len() - active;
+    let total_events: usize = sessions.iter().map(|s| s.wire_file.records().len()).sum();
+    Json(serde_json::json!({
+        "sessions_total": sessions.len(),
+        "sessions_active": active,
+        "sessions_archived": archived,
+        "total_wire_events": total_events,
+    }))
+}
+
+/// Returns system information.
+#[tracing::instrument(level = "debug")]
+pub async fn system_info() -> Json<serde_json::Value> {
+    let env = crate::utils::environment::Environment::detect().await;
+    Json(serde_json::json!({
+        "os_kind": env.os_kind,
+        "os_arch": env.os_arch,
+        "os_version": env.os_version,
+        "shell_name": env.shell_name,
+        "shell_path": env.shell_path.to_string_lossy().to_string(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

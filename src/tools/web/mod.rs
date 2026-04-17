@@ -106,7 +106,7 @@ async fn search_moonshot(
     limit: usize,
     include_content: bool,
     config: &crate::config::MoonshotSearchConfig,
-    _runtime: &crate::soul::agent::Runtime,
+    runtime: &crate::soul::agent::Runtime,
 ) -> crate::soul::message::ToolReturnValue {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(180))
@@ -122,10 +122,23 @@ async fn search_moonshot(
 
     let mut headers = reqwest::header::HeaderMap::new();
     let _ = headers.insert("User-Agent", crate::constant::USER_AGENT.as_str().parse().unwrap());
+    let api_key = match runtime.oauth.resolve_api_key(&config.api_key, config.oauth.as_ref()).await {
+        Some(k) => k,
+        None => {
+            return crate::soul::message::ToolReturnValue::Error {
+                error: "Search service is not configured. Set up moonshot_search in config to enable this tool.".into(),
+            };
+        }
+    };
     let _ = headers.insert(
         "Authorization",
-        format!("Bearer {}", config.api_key.expose_secret()).parse().unwrap(),
+        format!("Bearer {}", api_key.expose_secret()).parse().unwrap(),
     );
+    for (k, v) in runtime.oauth.common_headers() {
+        if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
+            let _ = headers.insert(name, v.parse().unwrap());
+        }
+    }
     if let Some(ref tool_call) = crate::soul::toolset::get_current_tool_call_or_none() {
         let _ = headers.insert("X-Msh-Tool-Call-Id", tool_call.id.parse().unwrap());
     }
@@ -334,7 +347,7 @@ fn parse_duckduckgo_results(html: &str) -> Vec<SearchResult> {
 async fn fetch_moonshot(
     url: &str,
     config: &crate::config::MoonshotFetchConfig,
-    _runtime: &crate::soul::agent::Runtime,
+    runtime: &crate::soul::agent::Runtime,
 ) -> crate::soul::message::ToolReturnValue {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(180))
@@ -348,12 +361,26 @@ async fn fetch_moonshot(
         }
     };
 
+    let api_key = match runtime.oauth.resolve_api_key(&config.api_key, config.oauth.as_ref()).await {
+        Some(k) => k,
+        None => {
+            return crate::soul::message::ToolReturnValue::Error {
+                error: "Fetch service is not configured. Set up moonshot_fetch in config to enable this tool.".into(),
+            };
+        }
+    };
+
     let mut headers = reqwest::header::HeaderMap::new();
     let _ = headers.insert("User-Agent", crate::constant::USER_AGENT.as_str().parse().unwrap());
     let _ = headers.insert(
         "Authorization",
-        format!("Bearer {}", config.api_key.expose_secret()).parse().unwrap(),
+        format!("Bearer {}", api_key.expose_secret()).parse().unwrap(),
     );
+    for (k, v) in runtime.oauth.common_headers() {
+        if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
+            let _ = headers.insert(name, v.parse().unwrap());
+        }
+    }
     let _ = headers.insert("Accept", "text/markdown".parse().unwrap());
     if let Some(ref tool_call) = crate::soul::toolset::get_current_tool_call_or_none() {
         let _ = headers.insert("X-Msh-Tool-Call-Id", tool_call.id.parse().unwrap());
@@ -492,9 +519,27 @@ async fn fetch_with_http_get(url: &str) -> crate::soul::message::ToolReturnValue
     }
 }
 
-/// Basic HTML text extraction: removes scripts, styles, nav, header, footer, aside,
-/// then strips remaining tags and collapses whitespace.
+/// Semantic HTML text extraction using `readability-rust` (Mozilla Readability port).
+/// Falls back to basic regex-based tag stripping when readability yields no content.
 fn extract_html_text(html: &str) -> String {
+    // Try readability first for article-quality extraction.
+    match readability_rust::Readability::new(html, None) {
+        Ok(mut readability) => {
+            if let Some(article) = readability.parse() {
+                if let Some(text) = article.text_content {
+                    let text = readability_rust::normalize_whitespace(&text);
+                    if !text.is_empty() {
+                        return truncate_text(text);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Readability extraction failed: {}", e);
+        }
+    }
+
+    // Fallback: basic regex-based extraction.
     let mut text = html.to_string();
 
     // Remove common non-content blocks.
@@ -519,13 +564,16 @@ fn extract_html_text(html: &str) -> String {
     let ws_re = regex::Regex::new(r#"\s+"#).unwrap();
     text = ws_re.replace_all(&text, " ").trim().to_string();
 
-    // Limit length to avoid excessive tokens.
+    truncate_text(text)
+}
+
+/// Truncates text to a reasonable length for LLM context.
+fn truncate_text(mut text: String) -> String {
     const MAX_CHARS: usize = 100_000;
     if text.len() > MAX_CHARS {
         text.truncate(MAX_CHARS);
         text.push_str("\n\n[Content truncated due to length.]");
     }
-
     text
 }
 
@@ -562,10 +610,14 @@ mod tests {
     fn html_extraction_removes_scripts_and_tags() {
         let html = r#"
             <html>
-            <head><script>alert('x')</script></head>
+            <head><title>Test</title><script>alert('x')</script></head>
             <body>
-            <nav>menu</nav>
+            <nav><a href="/">menu</a></nav>
+            <main>
+            <h1>Welcome</h1>
             <p>Hello &amp; welcome!</p>
+            <p>This is a paragraph with enough text to be considered content.</p>
+            </main>
             <style>.x{color:red}</style>
             <footer>bye</footer>
             </body>

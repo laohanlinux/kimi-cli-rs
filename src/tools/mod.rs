@@ -3,12 +3,14 @@ use serde_json::Value;
 pub mod agent;
 pub mod ask_user;
 pub mod background;
+pub mod display;
 pub mod dmail;
 pub mod file;
 pub mod plan;
 pub mod shell;
 pub mod think;
 pub mod todo;
+pub mod utils;
 pub mod web;
 
 /// Raised when a tool decides to skip itself from the loading process.

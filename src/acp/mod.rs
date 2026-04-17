@@ -67,6 +67,8 @@ pub fn router() -> Router<AcpState> {
     Router::new()
         .route("/healthz", get(health))
         .route("/rpc", post(rpc_handler))
+        .route("/replay", get(handle_replay))
+        .route("/history", get(handle_history))
 }
 
 async fn health() -> Json<Value> {
@@ -186,6 +188,30 @@ async fn handle_tools_call(state: &AcpState, req: &RpcRequest) -> Value {
         }),
         req.id.clone(),
     )
+}
+
+async fn handle_replay(State(state): State<AcpState>) -> Json<Value> {
+    let history: Vec<Value> = state
+        .runtime
+        .session
+        .wire_file
+        .records()
+        .into_iter()
+        .map(|record| json!({ "event": record }))
+        .collect();
+    Json(json!({ "session_id": state.runtime.session.id, "events": history }))
+}
+
+async fn handle_history(State(state): State<AcpState>) -> Json<Value> {
+    let history: Vec<Value> = state
+        .runtime
+        .session
+        .wire_file
+        .records()
+        .into_iter()
+        .map(|record| json!({ "event": record }))
+        .collect();
+    Json(json!({ "session_id": state.runtime.session.id, "events": history }))
 }
 
 fn jsonrpc_success(result: Value, id: Option<Value>) -> Value {

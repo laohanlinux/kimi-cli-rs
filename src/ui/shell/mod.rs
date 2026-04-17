@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 
+mod visualize;
+
 /// A single turn in the shell history.
 #[derive(Debug, Clone)]
 struct HistoryItem {
@@ -21,11 +23,9 @@ struct HistoryItem {
 #[derive(Debug, Clone)]
 enum LiveEvent {
     StepBegin(usize),
-    ToolCall(String),
-    ToolResult(String, String),
-    // AssistantText(String), // currently unused
+    ToolCall(visualize::ToolCallBlock),
     Think(String),
-    Notification(String),
+    Notification(visualize::NotificationBlock),
     McpLoading,
     McpDone,
 }
@@ -56,7 +56,7 @@ enum Modal {
 struct TurnState {
     live_events: Vec<LiveEvent>,
     modal: Option<Modal>,
-    assistant_buffer: String,
+    content_block: visualize::ContentBlock,
 }
 
 impl TurnState {
@@ -64,9 +64,18 @@ impl TurnState {
         Self {
             live_events: Vec::new(),
             modal: None,
-            assistant_buffer: String::new(),
+            content_block: visualize::ContentBlock::new(false),
         }
     }
+}
+
+/// Popup overlay state for the shell.
+#[derive(Debug, Clone)]
+enum Popup {
+    Help,
+    Replay(Vec<String>, usize),
+    SessionPicker(Vec<(String, String)>, usize),
+    TaskList(Vec<String>, usize),
 }
 
 /// Interactive shell UI using ratatui.
@@ -80,6 +89,7 @@ pub struct ShellUi {
     scroll_offset: u16,
     status: Option<crate::soul::StatusSnapshot>,
     plan_mode: bool,
+    popup: Option<Popup>,
 }
 
 impl ShellUi {
@@ -164,12 +174,12 @@ impl ShellUi {
                             *running.lock().await = false;
                             outcome_rx_opt = None;
                             let mut state = turn_state.lock().await;
-                            if !state.assistant_buffer.is_empty() {
-                                let text = state.assistant_buffer.trim().to_string();
+                            if !state.content_block.is_empty() {
+                                let text = state.content_block.text().trim().to_string();
                                 if !text.is_empty() && !text.eq("(no response)") {
                                     self.history.push(HistoryItem { role: "assistant", content: text });
                                 }
-                                state.assistant_buffer.clear();
+                                state.content_block.clear();
                             }
                             state.live_events.clear();
                             state.modal = None;
@@ -210,6 +220,10 @@ impl ShellUi {
         wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
         outcome_rx_opt: &mut Option<tokio::sync::oneshot::Receiver<crate::error::Result<crate::soul::TurnOutcome>>>,
     ) -> Option<crate::app::ShellOutcome> {
+        if self.popup.is_some() {
+            return self.handle_popup_key(key, cli_arc).await;
+        }
+
         {
             let mut state = turn_state.lock().await;
             if state.modal.is_some() {
@@ -316,6 +330,21 @@ impl ShellUi {
                     }
                     'l' => {
                         self.scroll_offset = 0;
+                    }
+                    'h' => {
+                        self.popup = Some(Popup::Help);
+                    }
+                    'r' => {
+                        let events = self.gather_replay_events(cli_arc).await;
+                        self.popup = Some(Popup::Replay(events, 0));
+                    }
+                    's' => {
+                        let sessions = self.gather_sessions().await;
+                        self.popup = Some(Popup::SessionPicker(sessions, 0));
+                    }
+                    't' => {
+                        let tasks = self.gather_tasks(cli_arc).await;
+                        self.popup = Some(Popup::TaskList(tasks, 0));
                     }
                     'c' => {}
                     _ => {}
@@ -432,23 +461,36 @@ impl ShellUi {
             crate::wire::types::WireMessage::StepBegin { step_no } => {
                 state.live_events.push(LiveEvent::StepBegin(step_no));
             }
-            crate::wire::types::WireMessage::ToolCall { name, .. } => {
-                state.live_events.push(LiveEvent::ToolCall(name));
-            }
-            crate::wire::types::WireMessage::ToolResult { result, .. } => {
-                state.live_events.push(LiveEvent::ToolResult(
-                    String::new(),
-                    result.extract_text(),
+            crate::wire::types::WireMessage::ToolCall { name, arguments, .. } => {
+                let argument = crate::tools::extract_key_argument(
+                    &arguments.to_string(),
+                    &name,
+                );
+                state.live_events.push(LiveEvent::ToolCall(
+                    visualize::ToolCallBlock::new(name, argument),
                 ));
             }
+            crate::wire::types::WireMessage::ToolResult { result, .. } => {
+                // Find the most recent unfinished ToolCall block and finish it.
+                for evt in state.live_events.iter_mut().rev() {
+                    if let LiveEvent::ToolCall(block) = evt {
+                        if !block.finished {
+                            block.finish(&result);
+                            break;
+                        }
+                    }
+                }
+            }
             crate::wire::types::WireMessage::TextPart { text } => {
-                state.assistant_buffer.push_str(&text);
+                state.content_block.append(&text);
             }
             crate::wire::types::WireMessage::ThinkPart { thought } => {
                 state.live_events.push(LiveEvent::Think(thought));
             }
             crate::wire::types::WireMessage::Notification { text } => {
-                state.live_events.push(LiveEvent::Notification(text));
+                state.live_events.push(LiveEvent::Notification(
+                    visualize::NotificationBlock::new("Notification", text, "info"),
+                ));
             }
             crate::wire::types::WireMessage::McpLoadingBegin => {
                 state.live_events.push(LiveEvent::McpLoading);
@@ -610,6 +652,182 @@ impl ShellUi {
         }
     }
 
+    async fn handle_popup_key(
+        &mut self,
+        key: KeyEvent,
+        _cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
+    ) -> Option<crate::app::ShellOutcome> {
+        match &mut self.popup {
+            Some(Popup::Help) => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
+                        self.popup = None;
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Some(Popup::Replay(events, selected)) => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('r') => {
+                        self.popup = None;
+                    }
+                    KeyCode::Up => {
+                        *selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < events.len() {
+                            *selected += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        // Replay selection: append to history as a system note
+                        if let Some(evt) = events.get(*selected) {
+                            self.history.push(HistoryItem {
+                                role: "system",
+                                content: format!("Replay: {evt}"),
+                            });
+                        }
+                        self.popup = None;
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Some(Popup::SessionPicker(sessions, selected)) => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
+                        self.popup = None;
+                    }
+                    KeyCode::Up => {
+                        *selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < sessions.len() {
+                            *selected += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some((session_id, _)) = sessions.get(*selected) {
+                            if session_id != "__empty__" {
+                                return Some(crate::app::ShellOutcome::Reload {
+                                    session_id: Some(session_id.clone()),
+                                    prefill_text: None,
+                                });
+                            }
+                        }
+                        self.popup = None;
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        // Toggle scope would require state; for now just close
+                        self.popup = None;
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Some(Popup::TaskList(tasks, selected)) => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('t') => {
+                        self.popup = None;
+                    }
+                    KeyCode::Up => {
+                        *selected = selected.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < tasks.len() {
+                            *selected += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(task) = tasks.get(*selected) {
+                            self.history.push(HistoryItem {
+                                role: "system",
+                                content: format!("Task selected: {task}"),
+                            });
+                        }
+                        self.popup = None;
+                    }
+                    KeyCode::Char('r') => {
+                        // Refresh tasks
+                        self.popup = None;
+                    }
+                    KeyCode::Char('s') => {
+                        // Stop selected task would require CLI access
+                        self.popup = None;
+                    }
+                    _ => {}
+                }
+                None
+            }
+            None => None,
+        }
+    }
+
+    async fn gather_replay_events(
+        &self,
+        cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
+    ) -> Vec<String> {
+        let cli_guard = cli_arc.lock().await;
+        let Some(cli) = cli_guard.as_ref() else {
+            return vec!["No CLI available.".into()];
+        };
+        let records = cli.soul().wire_file().records();
+        let mut events = Vec::new();
+        for record in records.into_iter().rev().take(20) {
+            let text = match record {
+                crate::wire::types::WireMessage::TextPart { text } => format!("Text: {}", text.chars().take(60).collect::<String>()),
+                crate::wire::types::WireMessage::ThinkPart { thought } => format!("Think: {}", thought.chars().take(60).collect::<String>()),
+                crate::wire::types::WireMessage::ToolCall { name, .. } => format!("ToolCall: {name}"),
+                crate::wire::types::WireMessage::ToolResult { result, .. } => format!("ToolResult: {}", result.extract_text().chars().take(60).collect::<String>()),
+                crate::wire::types::WireMessage::StepBegin { step_no } => format!("Step {step_no}"),
+                crate::wire::types::WireMessage::TurnBegin { .. } => "Turn begin".into(),
+                crate::wire::types::WireMessage::Notification { text } => format!("Notify: {text}"),
+                _ => format!("{:?}", record),
+            };
+            events.push(text);
+        }
+        if events.is_empty() {
+            events.push("No replay events available.".into());
+        }
+        events
+    }
+
+    async fn gather_sessions(&self) -> Vec<(String, String)> {
+        let sessions = crate::session::list_all().await;
+        if sessions.is_empty() {
+            return vec![("__empty__".into(), "No sessions found.".into())];
+        }
+        sessions
+            .into_iter()
+            .map(|s| {
+                let label = format!("{} · {}", s.title, &s.id[..s.id.len().min(8)]);
+                (s.id, label)
+            })
+            .collect()
+    }
+
+    async fn gather_tasks(
+        &self,
+        cli_arc: &Arc<tokio::sync::Mutex<Option<crate::app::KimiCLI>>>,
+    ) -> Vec<String> {
+        let cli_guard = cli_arc.lock().await;
+        let Some(cli) = cli_guard.as_ref() else {
+            return vec!["No CLI available.".into()];
+        };
+        let tasks = cli.soul().runtime.background_tasks.list(false).await;
+        if tasks.is_empty() {
+            return vec!["No background tasks.".into()];
+        }
+        tasks
+            .into_iter()
+            .map(|t| {
+                let status = if t.is_running_blocking() { "running" } else { "done" };
+                format!("[{}] {} · {}", status, t.command, t.id)
+            })
+            .collect()
+    }
+
     fn draw(
         &self,
         frame: &mut ratatui::Frame,
@@ -620,8 +838,13 @@ impl ShellUi {
         let is_running = *running.blocking_lock();
         let has_modal = state.modal.is_some();
 
-        let live_height = if state.live_events.is_empty() { 0 } else {
-            (state.live_events.len() as u16 + 2).min(6)
+        let has_live = !state.live_events.is_empty() || !state.content_block.is_empty();
+        let live_height = if has_live {
+            let base = state.live_events.len() as u16;
+            let content_lines = if state.content_block.is_empty() { 0 } else { 3u16 };
+            (base + content_lines + 2).min(8)
+        } else {
+            0
         };
 
         let chunks = Layout::default()
@@ -664,42 +887,39 @@ impl ShellUi {
         frame.render_widget(history_paragraph, chunks[0]);
 
         // Live events
-        if !state.live_events.is_empty() {
-            let live_text: Vec<Line> = state
-                .live_events
-                .iter()
-                .map(|evt| match evt {
-                    LiveEvent::StepBegin(n) => Line::from(vec![
+        let has_live_content = !state.live_events.is_empty() || !state.content_block.is_empty();
+        if has_live_content {
+            let mut live_text: Vec<Line> = Vec::new();
+            if !state.content_block.is_empty() {
+                live_text.extend(state.content_block.render());
+                live_text.push(Line::from(""));
+            }
+            for evt in &state.live_events {
+                match evt {
+                    LiveEvent::StepBegin(n) => live_text.push(Line::from(vec![
                         Span::styled("Step ", Style::default().fg(Color::Yellow)),
                         Span::styled(n.to_string(), Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD)),
-                    ]),
-                    LiveEvent::ToolCall(name) => Line::from(vec![
-                        Span::styled("Tool: ", Style::default().fg(Color::Cyan)),
-                        Span::raw(name),
-                    ]),
-                    LiveEvent::ToolResult(name, text) => Line::from(vec![
-                        Span::styled("Result ", Style::default().fg(Color::DarkGray)),
-                        Span::raw(format!("{name}: {text}")),
-                    ]),
-                    // LiveEvent::AssistantText(t) => Line::from(t.as_str()),
-                    LiveEvent::Think(t) => Line::from(vec![
+                    ])),
+                    LiveEvent::ToolCall(block) => {
+                        live_text.extend(block.render());
+                    }
+                    LiveEvent::Think(t) => live_text.push(Line::from(vec![
                         Span::styled("Think: ", Style::default().fg(Color::Magenta)),
                         Span::raw(t),
-                    ]),
-                    LiveEvent::Notification(t) => Line::from(vec![
-                        Span::styled("Notify: ", Style::default().fg(Color::Yellow)),
-                        Span::raw(t),
-                    ]),
-                    LiveEvent::McpLoading => Line::from(vec![
+                    ])),
+                    LiveEvent::Notification(block) => {
+                        live_text.extend(block.render());
+                    }
+                    LiveEvent::McpLoading => live_text.push(Line::from(vec![
                         Span::styled("MCP ", Style::default().fg(Color::Cyan)),
                         Span::raw("loading..."),
-                    ]),
-                    LiveEvent::McpDone => Line::from(vec![
+                    ])),
+                    LiveEvent::McpDone => live_text.push(Line::from(vec![
                         Span::styled("MCP ", Style::default().fg(Color::Green)),
                         Span::raw("ready"),
-                    ]),
-                })
-                .collect();
+                    ])),
+                }
+            }
             let live_paragraph = Paragraph::new(Text::from(live_text))
                 .block(Block::default().title("Live").borders(Borders::ALL))
                 .wrap(Wrap { trim: true });
@@ -707,7 +927,7 @@ impl ShellUi {
         }
 
         // Status bar
-        let status_idx = if state.live_events.is_empty() { 1 } else { 2 };
+        let status_idx = if has_live { 2 } else { 1 };
         let status_text = self.build_status_text(&state);
         let status_paragraph = Paragraph::new(status_text)
             .block(Block::default().title("Status").borders(Borders::ALL))
@@ -715,7 +935,7 @@ impl ShellUi {
         frame.render_widget(status_paragraph, chunks[status_idx]);
 
         // Input
-        let input_idx = if state.live_events.is_empty() { 2 } else { 3 };
+        let input_idx = if has_live { 3 } else { 2 };
         let input_text = format!("> {}", self.input);
         let mut input_title = if self.plan_mode {
             "Input [PLAN MODE] (Enter=send, Ctrl+C/Esc=quit)"
@@ -751,6 +971,99 @@ impl ShellUi {
             frame.render_widget(Clear, area);
             self.draw_modal(frame, area, &state);
         }
+
+        // Popup overlay
+        if let Some(ref popup) = self.popup {
+            let area = Self::centered_rect(70, 50, frame.area());
+            frame.render_widget(Clear, area);
+            self.draw_popup(frame, area, popup);
+        }
+    }
+
+    fn draw_popup(&self, frame: &mut ratatui::Frame, area: Rect, popup: &Popup) {
+        match popup {
+            Popup::Help => {
+                let lines = vec![
+                    Line::from(vec![Span::styled("Shortcuts", Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD))]),
+                    Line::from(""),
+                    Line::from("Ctrl+C / Esc / Ctrl+Q  Exit shell"),
+                    Line::from("Ctrl+H                  Show this help"),
+                    Line::from("Ctrl+R                  Replay recent events"),
+                    Line::from("Ctrl+S                  Session picker"),
+                    Line::from("Ctrl+T                  Task browser"),
+                    Line::from("Ctrl+L                  Scroll to top"),
+                    Line::from("Ctrl+A                  Move cursor to start"),
+                    Line::from("Ctrl+E                  Move cursor to end"),
+                    Line::from("Ctrl+U                  Clear input"),
+                    Line::from("Ctrl+K                  Clear from cursor to end"),
+                    Line::from("Ctrl+W                  Delete previous word"),
+                    Line::from("Up/Down                 Input history / scroll"),
+                    Line::from(""),
+                    Line::from(vec![Span::styled("Press Esc or H to close", Style::default().fg(Color::DarkGray))]),
+                ];
+                let paragraph = Paragraph::new(Text::from(lines))
+                    .block(Block::default().title("Help").borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(paragraph, area);
+            }
+            Popup::Replay(events, selected) => {
+                let title = format!("Replay ({} events)", events.len());
+                let lines: Vec<Line> = events
+                    .iter()
+                    .enumerate()
+                    .map(|(i, evt)| {
+                        let style = if i == *selected {
+                            Style::default().bg(Color::Blue).fg(Color::White)
+                        } else {
+                            Style::default()
+                        };
+                        Line::from(Span::styled(evt.as_str(), style))
+                    })
+                    .collect();
+                let paragraph = Paragraph::new(Text::from(lines))
+                    .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(paragraph, area);
+            }
+            Popup::SessionPicker(sessions, selected) => {
+                let title = format!("Sessions ({})", sessions.len());
+                let lines: Vec<Line> = sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_id, label))| {
+                        let style = if i == *selected {
+                            Style::default().bg(Color::Blue).fg(Color::White)
+                        } else {
+                            Style::default()
+                        };
+                        Line::from(Span::styled(label.as_str(), style))
+                    })
+                    .collect();
+                let paragraph = Paragraph::new(Text::from(lines))
+                    .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(paragraph, area);
+            }
+            Popup::TaskList(tasks, selected) => {
+                let title = format!("Tasks ({})", tasks.len());
+                let lines: Vec<Line> = tasks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, task)| {
+                        let style = if i == *selected {
+                            Style::default().bg(Color::Blue).fg(Color::White)
+                        } else {
+                            Style::default()
+                        };
+                        Line::from(Span::styled(task.as_str(), style))
+                    })
+                    .collect();
+                let paragraph = Paragraph::new(Text::from(lines))
+                    .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(paragraph, area);
+            }
+        }
     }
 
     fn build_status_text(&self, state: &TurnState) -> Text<'_> {
@@ -776,7 +1089,7 @@ impl ShellUi {
         } else {
             spans.push(Span::raw("Ready"));
         }
-        if !state.assistant_buffer.is_empty() {
+        if !state.content_block.is_empty() {
             spans.push(Span::raw(" | "));
             spans.push(Span::styled("Generating...", Style::default().fg(Color::Green)));
         }

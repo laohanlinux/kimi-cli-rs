@@ -117,6 +117,16 @@ pub enum Command {
         /// File path or session ID to import.
         target: String,
     },
+    /// Show system and configuration information.
+    Info,
+    /// Manage plugins.
+    Plugin {
+        /// List installed plugins.
+        #[arg(long)]
+        list: bool,
+    },
+    /// Toad mode easter egg.
+    Toad,
     /// Manage MCP server configurations.
     #[command(subcommand)]
     Mcp(crate::mcp::cli::McpCommand),
@@ -234,6 +244,49 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
                 target_path.display(),
                 session.id
             );
+            Ok(())
+        }
+        Some(Command::Info) => {
+            println!("Kimi CLI (Rust port)");
+            println!("Version: {}", env!("CARGO_PKG_VERSION"));
+            println!("Config path: {:?}", config_path);
+            println!("Share dir: {}", share_dir.display());
+            println!("Working dir: {}", std::env::current_dir()?.display());
+            println!("Default model: {}", config.default_model);
+            println!("YOLO mode: {}", if args.yolo { "enabled" } else { "disabled" });
+            println!("Plan mode: {}", if args.plan { "enabled" } else { "disabled" });
+            Ok(())
+        }
+        Some(Command::Plugin { list }) => {
+            let plugins_dir = crate::plugin::get_plugins_dir();
+            if *list {
+                match std::fs::read_dir(&plugins_dir) {
+                    Ok(entries) => {
+                        let mut count = 0;
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                println!("{}", path.file_name().unwrap_or_default().to_string_lossy());
+                                count += 1;
+                            }
+                        }
+                        if count == 0 {
+                            println!("No plugins installed.");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to read plugins directory: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                println!("Plugins directory: {}", plugins_dir.display());
+                println!("Use --list to see installed plugins.");
+            }
+            Ok(())
+        }
+        Some(Command::Toad) => {
+            println!("🐸 Toad says: Ribbit ribbit!");
             Ok(())
         }
         Some(Command::Mcp(mcp_cmd)) => {

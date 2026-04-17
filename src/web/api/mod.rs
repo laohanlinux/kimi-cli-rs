@@ -56,6 +56,7 @@ pub fn router() -> Router<WebAppState> {
         .route("/api/sessions/:id/files/*path", get(get_session_file))
         .route("/api/sessions/:id/uploads/*path", get(get_upload_file))
         .route("/api/sessions/:id/stream", get(session_stream))
+        .route("/api/config", get(get_config))
         .nest("/api/work-dirs", work_dirs_router())
 }
 
@@ -756,6 +757,19 @@ async fn list_work_dirs() -> Json<serde_json::Value> {
         })
         .collect();
     Json(json!({ "work_dirs": dirs }))
+}
+
+/// Returns the current configuration (sanitized).
+#[tracing::instrument(level = "debug")]
+async fn get_config() -> Json<serde_json::Value> {
+    match crate::config::load_config(None) {
+        Ok(config) => Json(json!({
+            "default_model": config.default_model,
+            "models": config.models.keys().collect::<Vec<_>>(),
+            "providers": config.providers.keys().collect::<Vec<_>>(),
+        })),
+        Err(e) => Json(json!({ "error": e.to_string() })),
+    }
 }
 
 /// Returns the startup directory.

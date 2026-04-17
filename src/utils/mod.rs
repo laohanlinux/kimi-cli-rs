@@ -1,6 +1,10 @@
+pub mod clipboard;
+pub mod diff;
+pub mod editor;
 pub mod environment;
 pub mod io;
 pub mod path;
+pub mod string;
 
 /// Shortens a string by truncating from the end with an ellipsis.
 pub fn shorten(text: &str, width: usize) -> String {

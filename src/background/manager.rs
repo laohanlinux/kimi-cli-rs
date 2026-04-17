@@ -56,6 +56,16 @@ impl BackgroundTask {
     pub async fn is_running(&self) -> bool {
         *self.running.lock().await
     }
+
+    /// Returns true if the task is still running (blocking).
+    pub fn is_running_blocking(&self) -> bool {
+        *self.running.blocking_lock()
+    }
+
+    /// Returns the exit code (blocking).
+    pub fn exit_code_blocking(&self) -> Option<i32> {
+        *self.exit_code.blocking_lock()
+    }
 }
 
 /// Manages background task lifecycle.
@@ -332,6 +342,23 @@ impl BackgroundTaskManager {
             offset,
             next_offset: end as u64,
         }
+    }
+
+    /// Reconciles running tasks against a notification claim deadline.
+    pub async fn reconcile(&self, before_claim_ms: u64) -> Vec<BackgroundTask> {
+        let all = self.list(false).await;
+        let cutoff = std::time::SystemTime::now()
+            - std::time::Duration::from_millis(before_claim_ms);
+        all.into_iter()
+            .filter(|t| {
+                t.is_running_blocking() && t.created_at < cutoff
+            })
+            .collect()
+    }
+
+    /// Formats a single task for display.
+    pub fn format_task(task: &BackgroundTask) -> String {
+        crate::background::summary::summarize(task)
     }
 
     /// Creates a background agent task that runs a subagent.

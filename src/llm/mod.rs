@@ -44,6 +44,8 @@ pub struct Llm {
     pub provider_type: ProviderType,
     pub base_url: String,
     pub api_key: secrecy::SecretString,
+    /// Optional script lines for the `_scripted_echo` provider.
+    pub scripted_echo_lines: Vec<String>,
 }
 
 impl Default for Llm {
@@ -56,7 +58,247 @@ impl Default for Llm {
             provider_type: ProviderType::Kimi,
             base_url: String::new(),
             api_key: secrecy::SecretString::new(String::new().into()),
+            scripted_echo_lines: Vec::new(),
         }
+    }
+}
+
+impl Llm {
+    /// Sends a chat request to the provider and returns the assistant message.
+    #[tracing::instrument(level = "debug", skip(self, system_prompt, history, tools))]
+    pub async fn chat(
+        &self,
+        system_prompt: Option<&str>,
+        history: &[crate::soul::message::Message],
+        tools: Option<&crate::soul::toolset::KimiToolset>,
+    ) -> crate::error::Result<crate::soul::message::Message> {
+        if self.base_url.is_empty() && !matches!(self.provider_type, ProviderType::Echo | ProviderType::ScriptedEcho | ProviderType::Chaos) {
+            return Ok(crate::soul::message::Message {
+                role: "assistant".into(),
+                content: vec![crate::soul::message::ContentPart::Text {
+                    text: "LLM base_url is not configured.".into(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        match self.provider_type {
+            ProviderType::Echo => self.chat_echo(system_prompt, history),
+            ProviderType::ScriptedEcho => self.chat_scripted_echo(),
+            ProviderType::Chaos => self.chat_chaos(),
+            ProviderType::Anthropic => self.chat_anthropic(system_prompt, history, tools).await,
+            _ => self.chat_openai_compatible(system_prompt, history, tools).await,
+        }
+    }
+
+    fn chat_echo(
+        &self,
+        system_prompt: Option<&str>,
+        history: &[crate::soul::message::Message],
+    ) -> crate::error::Result<crate::soul::message::Message> {
+        let mut parts = Vec::new();
+        if let Some(sp) = system_prompt {
+            parts.push(crate::soul::message::ContentPart::Text {
+                text: format!("[system]\n{sp}"),
+            });
+        }
+        for msg in history {
+            parts.push(crate::soul::message::ContentPart::Text {
+                text: format!("[{}]\n{}", msg.role, msg.extract_text("")),
+            });
+        }
+        let text = if parts.is_empty() {
+            "echo: no input".into()
+        } else {
+            parts.iter().map(|p| match p {
+                crate::soul::message::ContentPart::Text { text } => text.as_str(),
+                crate::soul::message::ContentPart::Think { thought } => thought.as_str(),
+                _ => "",
+            }).collect::<Vec<_>>().join("\n\n")
+        };
+        Ok(crate::soul::message::Message {
+            role: "assistant".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text }],
+            tool_calls: None,
+            tool_call_id: None,
+        })
+    }
+
+    fn chat_scripted_echo(&self) -> crate::error::Result<crate::soul::message::Message> {
+        let text = self.scripted_echo_lines.first().cloned().unwrap_or_else(|| "scripted_echo: end of script".into());
+        Ok(crate::soul::message::Message {
+            role: "assistant".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text }],
+            tool_calls: None,
+            tool_call_id: None,
+        })
+    }
+
+    fn chat_chaos(&self) -> crate::error::Result<crate::soul::message::Message> {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let text: String = (0..rng.gen_range(10..50))
+            .map(|_| rng.gen_range('a'..='z'))
+            .collect();
+        Ok(crate::soul::message::Message {
+            role: "assistant".into(),
+            content: vec![crate::soul::message::ContentPart::Text { text }],
+            tool_calls: None,
+            tool_call_id: None,
+        })
+    }
+
+    async fn chat_openai_compatible(
+        &self,
+        system_prompt: Option<&str>,
+        history: &[crate::soul::message::Message],
+        tools: Option<&crate::soul::toolset::KimiToolset>,
+    ) -> crate::error::Result<crate::soul::message::Message> {
+        let mut messages = Vec::new();
+        if let Some(prompt) = system_prompt {
+            messages.push(ChatMessage {
+                role: "system".into(),
+                content: Some(prompt.into()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        for msg in history {
+            messages.push(convert_message(msg));
+        }
+
+        let tool_defs = tools.map(|t| convert_tools(t));
+
+        let request = ChatRequest {
+            model: self.model_name.clone(),
+            messages,
+            tools: tool_defs,
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()?;
+
+        let url = if self.base_url.ends_with('/') {
+            format!("{}v1/chat/completions", self.base_url)
+        } else {
+            format!("{}/v1/chat/completions", self.base_url)
+        };
+
+        let mut req = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()));
+
+        if matches!(self.provider_type, ProviderType::Kimi) {
+            req = req.header("X-Msh-Context-Caching", "true");
+        }
+
+        let response = req.json(&request).send().await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(crate::error::KimiCliError::Generic(
+                format!("LLM request failed: HTTP {status} - {body}"),
+            ));
+        }
+
+        let chat_response: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| crate::error::KimiCliError::Generic(format!("Failed to parse LLM response: {e}")))?;
+
+        let choice = chat_response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::error::KimiCliError::Generic("Empty LLM response choices".into()))?;
+
+        Ok(convert_chat_message(&choice.message))
+    }
+
+    async fn chat_anthropic(
+        &self,
+        system_prompt: Option<&str>,
+        history: &[crate::soul::message::Message],
+        tools: Option<&crate::soul::toolset::KimiToolset>,
+    ) -> crate::error::Result<crate::soul::message::Message> {
+        let mut messages: Vec<AnthropicMessage> = Vec::new();
+        for msg in history {
+            if msg.role == "system" {
+                continue;
+            }
+            messages.push(convert_message_to_anthropic(msg));
+        }
+
+        let system = system_prompt.map(|s| vec![AnthropicContent::Text { text: s.into() }]);
+        let tool_defs = tools.map(|t| convert_tools_to_anthropic(t));
+
+        let request = AnthropicRequest {
+            model: self.model_name.clone(),
+            max_tokens: 4096,
+            system,
+            messages,
+            tools: tool_defs,
+        };
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()?;
+
+        let url = if self.base_url.ends_with('/') {
+            format!("{}v1/messages", self.base_url)
+        } else {
+            format!("{}/v1/messages", self.base_url)
+        };
+
+        let response = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("x-api-key", self.api_key.expose_secret())
+            .header("anthropic-version", "2023-06-01")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(crate::error::KimiCliError::Generic(
+                format!("Anthropic request failed: HTTP {status} - {body}"),
+            ));
+        }
+
+        let anthropic_response: AnthropicResponse = response
+            .json()
+            .await
+            .map_err(|e| crate::error::KimiCliError::Generic(format!("Failed to parse Anthropic response: {e}")))?;
+
+        let mut text_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+        for content in anthropic_response.content {
+            match content {
+                AnthropicContent::Text { text } => text_parts.push(text),
+                AnthropicContent::ToolUse { id, name, input } => {
+                    tool_calls.push(crate::soul::message::ToolCall {
+                        id,
+                        name,
+                        arguments: input,
+                    });
+                }
+            }
+        }
+
+        Ok(crate::soul::message::Message {
+            role: "assistant".into(),
+            content: vec![crate::soul::message::ContentPart::Text {
+                text: text_parts.join("\n"),
+            }],
+            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_call_id: None,
+        })
     }
 }
 
@@ -123,86 +365,44 @@ struct Choice {
     message: ChatMessage,
 }
 
-impl Llm {
-    /// Sends a chat request to the provider and returns the assistant message.
-    #[tracing::instrument(level = "debug", skip(self, system_prompt, history, tools))]
-    pub async fn chat(
-        &self,
-        system_prompt: Option<&str>,
-        history: &[crate::soul::message::Message],
-        tools: Option<&crate::soul::toolset::KimiToolset>,
-    ) -> crate::error::Result<crate::soul::message::Message> {
-        if self.base_url.is_empty() {
-            return Ok(crate::soul::message::Message {
-                role: "assistant".into(),
-                content: vec![crate::soul::message::ContentPart::Text {
-                    text: "LLM base_url is not configured.".into(),
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-            });
-        }
+/// Anthropic request payload.
+#[derive(Debug, serde::Serialize)]
+struct AnthropicRequest {
+    model: String,
+    max_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<Vec<AnthropicContent>>,
+    messages: Vec<AnthropicMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<AnthropicToolDef>>,
+}
 
-        let mut messages = Vec::new();
-        if let Some(prompt) = system_prompt {
-            messages.push(ChatMessage {
-                role: "system".into(),
-                content: Some(prompt.into()),
-                tool_calls: None,
-                tool_call_id: None,
-            });
-        }
-        for msg in history {
-            messages.push(convert_message(msg));
-        }
+#[derive(Debug, serde::Serialize)]
+struct AnthropicMessage {
+    role: String,
+    content: Vec<AnthropicContent>,
+}
 
-        let tool_defs = tools.map(|t| convert_tools(t));
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse { id: String, name: String, input: serde_json::Value },
+}
 
-        let request = ChatRequest {
-            model: self.model_name.clone(),
-            messages,
-            tools: tool_defs,
-        };
+#[derive(Debug, serde::Serialize)]
+struct AnthropicToolDef {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    input_schema: serde_json::Value,
+}
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(180))
-            .build()?;
-
-        let url = if self.base_url.ends_with('/') {
-            format!("{}v1/chat/completions", self.base_url)
-        } else {
-            format!("{}/v1/chat/completions", self.base_url)
-        };
-
-        let response = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()))
-            .json(&request)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(crate::error::KimiCliError::Generic(
-                format!("LLM request failed: HTTP {status} - {body}"),
-            ));
-        }
-
-        let chat_response: ChatResponse = response
-            .json()
-            .await
-            .map_err(|e| crate::error::KimiCliError::Generic(format!("Failed to parse LLM response: {e}")))?;
-
-        let choice = chat_response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| crate::error::KimiCliError::Generic("Empty LLM response choices".into()))?;
-
-        Ok(convert_chat_message(&choice.message))
-    }
+#[derive(Debug, serde::Deserialize)]
+struct AnthropicResponse {
+    content: Vec<AnthropicContent>,
 }
 
 fn convert_message(msg: &crate::soul::message::Message) -> ChatMessage {
@@ -263,6 +463,37 @@ fn convert_tools(toolset: &crate::soul::toolset::KimiToolset) -> Vec<ToolDef> {
         .collect()
 }
 
+fn convert_message_to_anthropic(msg: &crate::soul::message::Message) -> AnthropicMessage {
+    let mut content = vec![AnthropicContent::Text {
+        text: msg.extract_text(""),
+    }];
+    if let Some(ref calls) = msg.tool_calls {
+        for call in calls {
+            content.push(AnthropicContent::ToolUse {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input: call.arguments.clone(),
+            });
+        }
+    }
+    AnthropicMessage {
+        role: if msg.role == "assistant" { "assistant".into() } else { "user".into() },
+        content,
+    }
+}
+
+fn convert_tools_to_anthropic(toolset: &crate::soul::toolset::KimiToolset) -> Vec<AnthropicToolDef> {
+    toolset
+        .tools_sync()
+        .iter()
+        .map(|(name, tool)| AnthropicToolDef {
+            name: name.clone(),
+            description: Some(tool.description().into()),
+            input_schema: tool.parameters_schema(),
+        })
+        .collect()
+}
+
 /// Returns a display-friendly model name.
 pub fn model_display_name(model_name: Option<&str>) -> String {
     match model_name {
@@ -290,14 +521,19 @@ pub async fn create_llm(
     if thinking.unwrap_or(false) {
         capabilities.insert(ModelCapability::Thinking);
     }
+
+    let base_url = augment_base_url_with_env(&provider.base_url, provider_type);
+    let api_key = augment_api_key_with_env(&provider.api_key, provider_type);
+
     Ok(Some(Llm {
         model_name: model.model.clone(),
         max_context_size: model.max_context_size,
         capabilities,
         thinking,
         provider_type,
-        base_url: provider.base_url.clone(),
-        api_key: provider.api_key.clone(),
+        base_url,
+        api_key,
+        scripted_echo_lines: Vec::new(),
     }))
 }
 
@@ -323,7 +559,13 @@ pub async fn clone_llm_with_model_alias(
         )
     })?;
     let thinking = llm.and_then(|l| l.thinking);
-    create_llm(provider, model, thinking, None).await
+    let mut new_llm = create_llm(provider, model, thinking, None).await?;
+    if let Some(ref original) = llm {
+        if let Some(ref mut llm) = new_llm {
+            llm.scripted_echo_lines = original.scripted_echo_lines.clone();
+        }
+    }
+    Ok(new_llm)
 }
 
 /// Derives capabilities for a model based on its name and explicit config.
@@ -339,4 +581,28 @@ pub fn derive_model_capabilities(model: &crate::config::LlmModel) -> HashSet<Mod
         caps.insert(ModelCapability::VideoIn);
     }
     caps
+}
+
+fn augment_base_url_with_env(base_url: &str, provider_type: ProviderType) -> String {
+    let env_var = match provider_type {
+        ProviderType::Kimi => "KIMI_BASE_URL",
+        ProviderType::Anthropic => "ANTHROPIC_BASE_URL",
+        ProviderType::OpenAiLegacy | ProviderType::OpenAiResponses => "OPENAI_BASE_URL",
+        ProviderType::GoogleGenAi | ProviderType::Gemini | ProviderType::VertexAi => "GOOGLE_GENAI_BASE_URL",
+        _ => return base_url.into(),
+    };
+    std::env::var(env_var).unwrap_or_else(|_| base_url.into())
+}
+
+fn augment_api_key_with_env(api_key: &secrecy::SecretString, provider_type: ProviderType) -> secrecy::SecretString {
+    let env_var = match provider_type {
+        ProviderType::Kimi => "KIMI_API_KEY",
+        ProviderType::Anthropic => "ANTHROPIC_API_KEY",
+        ProviderType::OpenAiLegacy | ProviderType::OpenAiResponses => "OPENAI_API_KEY",
+        ProviderType::GoogleGenAi | ProviderType::Gemini | ProviderType::VertexAi => "GOOGLE_GENAI_API_KEY",
+        _ => return api_key.clone(),
+    };
+    std::env::var(env_var)
+        .map(|v| secrecy::SecretString::new(v.into()))
+        .unwrap_or_else(|_| api_key.clone())
 }

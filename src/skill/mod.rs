@@ -136,6 +136,7 @@ pub async fn read_skill_text(skill: &Skill) -> Option<String> {
 }
 
 /// Parses SKILL.md contents to extract name, description, and type from YAML frontmatter.
+/// For flow skills, also parses the first mermaid or d2 fenced code block into a Flow.
 #[tracing::instrument(level = "debug")]
 pub fn parse_skill_text(content: &str, dir_path: &Path) -> crate::error::Result<Skill> {
     let mut name = dir_path
@@ -168,13 +169,131 @@ pub fn parse_skill_text(content: &str, dir_path: &Path) -> crate::error::Result<
         }
     }
 
+    let mut flow = None;
+    if skill_type == SkillType::Flow {
+        match parse_flow_from_skill(content) {
+            Ok(f) => flow = Some(f),
+            Err(e) => {
+                tracing::error!("Failed to parse flow skill {}: {}. Falling back to standard.", name, e);
+                skill_type = SkillType::Standard;
+            }
+        }
+    }
+
     Ok(Skill {
         name,
         description,
         r#type: skill_type,
         dir: dir_path.to_path_buf(),
-        flow: None,
+        flow,
     })
+}
+
+fn parse_flow_from_skill(content: &str) -> crate::error::Result<crate::skill::flow::Flow> {
+    for (lang, code) in iter_fenced_codeblocks(content) {
+        if lang == "mermaid" {
+            return crate::skill::flow::mermaid::parse_mermaid_flowchart(&code)
+                .map_err(|e| crate::error::KimiCliError::Generic(format!("Invalid mermaid flow diagram: {e}").into()));
+        }
+        if lang == "d2" {
+            return crate::skill::flow::d2::parse_d2_flowchart(&code)
+                .map_err(|e| crate::error::KimiCliError::Generic(format!("Invalid d2 flow diagram: {e}").into()));
+        }
+    }
+    Err(crate::error::KimiCliError::Generic(
+        "Flow skills require a mermaid or d2 code block in SKILL.md.".into(),
+    ))
+}
+
+fn iter_fenced_codeblocks(content: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    let mut fence = String::new();
+    let mut fence_char = '\0';
+    let mut lang = String::new();
+    let mut buf: Vec<&str> = Vec::new();
+    let mut in_block = false;
+
+    for line in content.lines() {
+        let stripped = line.trim_start();
+        if !in_block {
+            if let Some((f, fc, info)) = parse_fence_open(stripped) {
+                fence = f;
+                fence_char = fc;
+                lang = normalize_code_lang(&info);
+                in_block = true;
+                buf.clear();
+            }
+            continue;
+        }
+
+        if is_fence_close(stripped, fence_char, fence.len()) {
+            result.push((lang.clone(), buf.join("\n").trim_matches('\n').to_string()));
+            in_block = false;
+            fence.clear();
+            fence_char = '\0';
+            lang.clear();
+            buf.clear();
+            continue;
+        }
+
+        buf.push(line);
+    }
+
+    result
+}
+
+fn parse_fence_open(line: &str) -> Option<(String, char, String)> {
+    if line.is_empty() {
+        return None;
+    }
+    let first = line.chars().next()?;
+    if first != '`' && first != '~' {
+        return None;
+    }
+    let mut count = 0;
+    for ch in line.chars() {
+        if ch == first {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    if count < 3 {
+        return None;
+    }
+    let fence = first.to_string().repeat(count);
+    let info = line[count..].trim().to_string();
+    Some((fence, first, info))
+}
+
+fn normalize_code_lang(info: &str) -> String {
+    if info.is_empty() {
+        return String::new();
+    }
+    let lang = info.split_whitespace().next().unwrap_or("").trim().to_lowercase();
+    if lang.starts_with('{') && lang.ends_with('}') {
+        lang[1..lang.len()-1].trim().to_string()
+    } else {
+        lang
+    }
+}
+
+fn is_fence_close(line: &str, fence_char: char, fence_len: usize) -> bool {
+    if fence_char == '\0' || line.is_empty() || line.chars().next() != Some(fence_char) {
+        return false;
+    }
+    let mut count = 0;
+    for ch in line.chars() {
+        if ch == fence_char {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    if count < fence_len {
+        return false;
+    }
+    line[count..].trim().is_empty()
 }
 
 /// Resolves layered skill roots in priority order.
@@ -230,11 +349,17 @@ type: flow
 ---
 
 # Content
+
+```mermaid
+flowchart TD
+    A[begin] --> B[end]
+```
 "#;
         let skill = parse_skill_text(content, &dir).unwrap();
         assert_eq!(skill.name, "Test Skill");
         assert_eq!(skill.description, "A test description");
         assert_eq!(skill.r#type, SkillType::Flow);
+        assert!(skill.flow.is_some());
     }
 
     #[test]

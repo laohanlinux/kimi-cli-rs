@@ -3,18 +3,7 @@ use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, Mutex};
 
-/// JSON-RPC request from client.
-#[derive(Debug, Clone, serde::Deserialize)]
-struct JsonRpcRequest {
-    /// JSON-RPC version field (kept for protocol completeness).
-    #[allow(dead_code)]
-    jsonrpc: String,
-    #[serde(default)]
-    id: Option<serde_json::Value>,
-    method: String,
-    #[serde(default)]
-    params: serde_json::Value,
-}
+
 
 /// Bridges the internal Wire to a JSON-RPC over stdio client.
 pub struct WireServer {
@@ -90,7 +79,7 @@ impl WireServer {
                 continue;
             }
 
-            let req: JsonRpcRequest = match serde_json::from_value(value) {
+            let req: crate::wire::jsonrpc::JsonRpcRequest = match serde_json::from_value(value) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(%e, "invalid jsonrpc request structure");
@@ -138,7 +127,7 @@ impl WireServer {
         Ok(())
     }
 
-    fn handle_initialize(req: &JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    fn handle_initialize(req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
         Ok(serde_json::json!({
             "jsonrpc": "2.0",
             "id": req.id,
@@ -150,7 +139,7 @@ impl WireServer {
         }))
     }
 
-    async fn handle_prompt(&self, req: &JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_prompt(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
         let text = req
             .params
             .get("text")
@@ -203,7 +192,7 @@ impl WireServer {
         Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "accepted": true } }))
     }
 
-    async fn handle_steer(&self, req: &JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_steer(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
         let text = req
             .params
             .get("text")
@@ -213,12 +202,12 @@ impl WireServer {
         Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "accepted": true } }))
     }
 
-    async fn handle_cancel(&self, req: &JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_cancel(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
         self.cancel_tx.lock().await.send(true).ok();
         Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "cancelled": true } }))
     }
 
-    async fn handle_replay(&self, req: &JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_replay(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
         let session = &self.runtime.session;
         let records = session.wire_file.records();
         let limit = req
@@ -249,7 +238,7 @@ impl WireServer {
 
     async fn handle_set_plan_mode(
         &self,
-        req: &JsonRpcRequest,
+        req: &crate::wire::jsonrpc::JsonRpcRequest,
     ) -> crate::error::Result<serde_json::Value> {
         let enabled = req.params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
         {
@@ -402,7 +391,7 @@ mod tests {
 
     #[test]
     fn initialize_response_format() {
-        let req = JsonRpcRequest {
+        let req = crate::wire::jsonrpc::JsonRpcRequest {
             jsonrpc: "2.0".into(),
             id: Some(serde_json::json!(1)),
             method: "initialize".into(),
