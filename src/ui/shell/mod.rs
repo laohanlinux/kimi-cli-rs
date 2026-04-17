@@ -1,21 +1,23 @@
+pub mod placeholders;
+pub mod visualize;
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Terminal;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::ui::repl::{
-    self, draw, InputState, ReplMessage, ReplMessageRole,
-};
+use crate::ui::repl::{self, InputState, ReplMessage, ReplMessageRole, draw};
+use crate::ui::shell::visualize::{InputAction, classify_input};
 
 /// Modal overlay state (Kimi approvals — not in Claude REPL, layered on top).
 #[derive(Debug, Clone)]
@@ -73,6 +75,12 @@ pub struct ShellUi {
     turn_cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// Ctrl+C while `running`: first = cancel turn, second = quit shell.
     turn_ctrl_c_during_run: u32,
+    /// User input entered while a turn is streaming (`classify_input` → queue or `/btw`).
+    pending_turn_queue: VecDeque<String>,
+    /// Monotonic id for `[Pasted text #N]` placeholders.
+    paste_next_id: i64,
+    /// Full text for each paste id (consumed when the placeholder is submitted).
+    paste_cache: HashMap<i64, String>,
 }
 
 impl std::fmt::Debug for ShellUi {
@@ -109,6 +117,9 @@ impl Default for ShellUi {
             cli_arc: None,
             turn_cancel_tx: None,
             turn_ctrl_c_during_run: 0,
+            pending_turn_queue: VecDeque::new(),
+            paste_next_id: 0,
+            paste_cache: HashMap::new(),
         }
     }
 }
@@ -131,7 +142,13 @@ impl ShellUi {
         let perm = self
             .status
             .as_ref()
-            .map(|s| if s.yolo_enabled { "Yolo" } else { "Interactive" })
+            .map(|s| {
+                if s.yolo_enabled {
+                    "Yolo"
+                } else {
+                    "Interactive"
+                }
+            })
             .unwrap_or(self.permission_label.as_str());
         let plan = if self.plan_mode { " · plan" } else { "" };
         if self.header_model.is_empty() {
@@ -181,7 +198,7 @@ impl ShellUi {
                 let _ = tx.send(true);
             }
             self.add_system_message(
-                "已请求停止本轮；若仍在输出请稍候。再按一次 Ctrl+C 退出程序。",
+                "Stop requested for this turn; wait if output is still streaming. Press Ctrl+C again to exit.",
             );
             self.scroll_offset = 0;
             return;
@@ -271,14 +288,18 @@ impl ShellUi {
             .messages
             .iter()
             .filter(|m| {
-                !(m.role == ReplMessageRole::System && m.text.starts_with(repl::WELCOME_TEXT_PREFIX))
+                !(m.role == ReplMessageRole::System
+                    && m.text.starts_with(repl::WELCOME_TEXT_PREFIX))
             })
             .cloned()
             .collect();
         let _ = repl::save_transcript(&self.session_dir, &to_save).await;
 
         disable_raw_mode()?;
-        crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)?;
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::LeaveAlternateScreen
+        )?;
         terminal.show_cursor()?;
 
         result
@@ -322,7 +343,17 @@ impl ShellUi {
                 }
                 Event::Paste(text) => {
                     if self.input_area_active() {
-                        self.input.insert_str(&text);
+                        let sanitized = placeholders::sanitize_surrogates(&text);
+                        let normalized = placeholders::normalize_pasted_text(&sanitized);
+                        if placeholders::should_placeholderize_pasted_text(&normalized) {
+                            self.paste_next_id = self.paste_next_id.saturating_add(1);
+                            let id = self.paste_next_id;
+                            self.paste_cache.insert(id, normalized.clone());
+                            let ph = placeholders::build_pasted_text_placeholder(id, &normalized);
+                            self.input.insert_str(&ph);
+                        } else {
+                            self.input.insert_str(&normalized);
+                        }
                     }
                 }
                 Event::Resize(_, _) => {}
@@ -334,7 +365,9 @@ impl ShellUi {
 
     async fn handle_key(&mut self, key: KeyEvent) -> Option<crate::app::ShellOutcome> {
         match key.code {
-            KeyCode::Char('c') | KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('c') | KeyCode::Char('q')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 self.handle_user_interrupt();
                 return None;
             }
@@ -359,7 +392,7 @@ impl ShellUi {
             self.loading = false;
             self.running = false;
             self.turn_ctrl_c_during_run = 0;
-            self.add_system_message("已取消（Esc）");
+            self.add_system_message("Cancelled (Esc)");
             return None;
         }
 
@@ -439,13 +472,51 @@ impl ShellUi {
 
     async fn submit_input(&mut self) -> Option<crate::app::ShellOutcome> {
         if self.running {
+            let text = self.input.submit();
+            if text.is_empty() {
+                return None;
+            }
+            if let Some(outcome) = self.handle_shell_slash_command(&text) {
+                self.scroll_offset = 0;
+                return Some(outcome);
+            }
+            let action = classify_input(&text, true);
+            match action.kind {
+                InputAction::BTW => {
+                    if !action.args.is_empty() {
+                        self.pending_turn_queue
+                            .push_back(format!("[btw] {}", action.args));
+                        self.add_system_message("Side question queued for the next turn.");
+                    }
+                }
+                InputAction::QUEUE => {
+                    self.pending_turn_queue.push_back(text);
+                    self.add_system_message(format!(
+                        "Queued for next turn ({} in queue).",
+                        self.pending_turn_queue.len()
+                    ));
+                }
+                InputAction::IGNORED => {
+                    if !action.args.is_empty() {
+                        self.add_system_message(action.args);
+                    }
+                }
+                _ => {}
+            }
             return None;
         }
+
         let text = self.input.submit();
         if text.is_empty() {
             return None;
         }
 
+        self.begin_user_turn(text)
+    }
+
+    /// Starts a user turn (new messages + background `run_with_wire`). Used by submit and queue flush.
+    fn begin_user_turn(&mut self, text: String) -> Option<crate::app::ShellOutcome> {
+        let text = placeholders::expand_pasted_text_placeholders(&text, &mut self.paste_cache);
         if let Some(outcome) = self.handle_shell_slash_command(&text) {
             self.scroll_offset = 0;
             return Some(outcome);
@@ -496,6 +567,16 @@ impl ShellUi {
         None
     }
 
+    fn flush_next_queued_turn(&mut self) {
+        if self.running || self.loading {
+            return;
+        }
+        let Some(text) = self.pending_turn_queue.pop_front() else {
+            return;
+        };
+        let _ = self.begin_user_turn(text);
+    }
+
     async fn handle_async_messages(&mut self) {
         if let Some(mut rx) = self.wire_rx.take() {
             while let Ok(msg) = rx.try_recv() {
@@ -523,7 +604,9 @@ impl ShellUi {
                                 let fm = msg.extract_text("");
                                 if !fm.is_empty() {
                                     if let Some(last) = self.messages.last_mut() {
-                                        if last.role == ReplMessageRole::Assistant && last.text.trim().is_empty() {
+                                        if last.role == ReplMessageRole::Assistant
+                                            && last.text.trim().is_empty()
+                                        {
                                             last.text = fm;
                                         } else if !last.text.contains(&fm) {
                                             self.append_to_last_assistant("\n\n");
@@ -538,6 +621,7 @@ impl ShellUi {
                         }
                     }
                     self.scroll_offset = 0;
+                    self.flush_next_queued_turn();
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -546,8 +630,11 @@ impl ShellUi {
                     self.turn_ctrl_c_during_run = 0;
                     self.outcome_rx = None;
                     self.turn_cancel_tx = None;
-                    self.add_system_message("Turn finished but the result channel closed unexpectedly.");
+                    self.add_system_message(
+                        "Turn finished but the result channel closed unexpectedly.",
+                    );
                     self.scroll_offset = 0;
+                    self.flush_next_queued_turn();
                 }
             }
         }
@@ -558,7 +645,9 @@ impl ShellUi {
             crate::wire::types::WireMessage::StepBegin { step_no } => {
                 self.append_to_last_assistant(&format!("\n--- step {step_no} ---\n"));
             }
-            crate::wire::types::WireMessage::ToolCall { name, arguments, .. } => {
+            crate::wire::types::WireMessage::ToolCall {
+                name, arguments, ..
+            } => {
                 let arg = crate::tools::extract_key_argument(&arguments.to_string(), &name);
                 let line = if let Some(a) = arg {
                     format!("\n[tool {name} ({a})]\n")
@@ -653,7 +742,10 @@ impl ShellUi {
                     });
                 }
                 "login" | "setup" => {
-                    match std::process::Command::new("kimi").arg("login").status() {
+                    match crate::utils::subprocess_env::kimi_std_command()
+                        .arg("login")
+                        .status()
+                    {
                         Ok(s) if s.success() => {
                             return Some(crate::app::ShellOutcome::Reload {
                                 session_id: None,
@@ -661,12 +753,17 @@ impl ShellUi {
                             });
                         }
                         Ok(s) => self.add_system_message(format!("Login failed with status: {s}")),
-                        Err(e) => self.add_system_message(format!("Failed to run `kimi login`: {e}")),
+                        Err(e) => {
+                            self.add_system_message(format!("Failed to run `kimi login`: {e}"))
+                        }
                     }
                     return None;
                 }
                 "logout" => {
-                    match std::process::Command::new("kimi").arg("logout").status() {
+                    match crate::utils::subprocess_env::kimi_std_command()
+                        .arg("logout")
+                        .status()
+                    {
                         Ok(s) if s.success() => {
                             return Some(crate::app::ShellOutcome::Reload {
                                 session_id: None,
@@ -674,7 +771,9 @@ impl ShellUi {
                             });
                         }
                         Ok(s) => self.add_system_message(format!("Logout failed with status: {s}")),
-                        Err(e) => self.add_system_message(format!("Failed to run `kimi logout`: {e}")),
+                        Err(e) => {
+                            self.add_system_message(format!("Failed to run `kimi logout`: {e}"))
+                        }
                     }
                     return None;
                 }
@@ -766,8 +865,16 @@ impl ShellUi {
         }
     }
 
-    async fn submit_approval(&mut self, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
-        if let Some(Modal::Approval { request_id, selected_index, .. }) = self.modal.take() {
+    async fn submit_approval(
+        &mut self,
+        wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
+    ) {
+        if let Some(Modal::Approval {
+            request_id,
+            selected_index,
+            ..
+        }) = self.modal.take()
+        {
             let response_str = match selected_index {
                 0 => "approve",
                 1 => "approve_for_session",
@@ -784,8 +891,16 @@ impl ShellUi {
         }
     }
 
-    async fn submit_question(&mut self, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
-        if let Some(Modal::Question { request_id, answers, .. }) = self.modal.take() {
+    async fn submit_question(
+        &mut self,
+        wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
+    ) {
+        if let Some(Modal::Question {
+            request_id,
+            answers,
+            ..
+        }) = self.modal.take()
+        {
             let _ = wire_tx
                 .send(crate::wire::types::WireMessage::QuestionResponse {
                     request_id,
@@ -795,7 +910,10 @@ impl ShellUi {
         }
     }
 
-    async fn cancel_modal(&mut self, wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>) {
+    async fn cancel_modal(
+        &mut self,
+        wire_tx: &tokio::sync::mpsc::Sender<crate::wire::types::WireMessage>,
+    ) {
         if let Some(Modal::Approval { request_id, .. }) = self.modal.take() {
             let _ = wire_tx
                 .send(crate::wire::types::WireMessage::ApprovalResponse {
@@ -890,9 +1008,14 @@ impl ShellUi {
                 crate::wire::types::WireMessage::ThinkPart { thought } => {
                     format!("Think: {}", thought.chars().take(60).collect::<String>())
                 }
-                crate::wire::types::WireMessage::ToolCall { name, .. } => format!("ToolCall: {name}"),
+                crate::wire::types::WireMessage::ToolCall { name, .. } => {
+                    format!("ToolCall: {name}")
+                }
                 crate::wire::types::WireMessage::ToolResult { result, .. } => {
-                    format!("ToolResult: {}", result.extract_text().chars().take(60).collect::<String>())
+                    format!(
+                        "ToolResult: {}",
+                        result.extract_text().chars().take(60).collect::<String>()
+                    )
                 }
                 crate::wire::types::WireMessage::StepBegin { step_no } => format!("Step {step_no}"),
                 crate::wire::types::WireMessage::TurnBegin { .. } => "Turn begin".into(),
@@ -935,7 +1058,11 @@ impl ShellUi {
         }
         let mut result = Vec::new();
         for t in tasks {
-            let status = if t.is_running().await { "running" } else { "done" };
+            let status = if t.is_running().await {
+                "running"
+            } else {
+                "done"
+            };
             result.push(format!("[{}] {} · {}", status, t.command, t.id));
         }
         result
@@ -947,19 +1074,27 @@ impl ShellUi {
                 let lines = vec![
                     Line::from(vec![Span::styled(
                         "Shortcuts",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )]),
                     Line::from(""),
-                    Line::from("Ctrl+C / Ctrl+Q  空闲：退出 · 助手运行时：第一次取消本轮，第二次退出"),
-                    Line::from("Esc            助手运行时：取消本轮 · 空闲：退出"),
-                    Line::from("Mouse drag     在 Messages 里拖选复制（未启用鼠标捕获）"),
-                    Line::from("PgUp / PgDn    上下滚动对话"),
+                    Line::from(
+                        "Ctrl+C / Ctrl+Q  When idle: exit · When assistant runs: first cancels turn, second exits",
+                    ),
+                    Line::from("Esc            When assistant runs: cancel turn · When idle: exit"),
+                    Line::from(
+                        "Mouse drag     Drag to select and copy in Messages (mouse capture off)",
+                    ),
+                    Line::from("PgUp / PgDn    Scroll conversation"),
                     Line::from("Ctrl+H         Help"),
                     Line::from("Ctrl+R         Replay recent events"),
                     Line::from("Ctrl+S         Session picker"),
                     Line::from("Ctrl+T         Task browser"),
                     Line::from("Up/Down        Input history"),
-                    Line::from("运行中仍可编辑输入框；须等本轮结束后再按 Enter 发送"),
+                    Line::from(
+                        "You can edit input while running; press Enter to send only after this turn ends",
+                    ),
                     Line::from(""),
                     Line::from(vec![Span::styled(
                         "Press Esc or H to close",
@@ -1069,7 +1204,9 @@ impl ShellUi {
                 let mut lines = vec![
                     Line::from(vec![Span::styled(
                         "Approval request",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )]),
                     Line::from(""),
                     Line::from(format!("{sender} wants to {action}:")),
@@ -1170,7 +1307,10 @@ impl ShellUi {
                 } else {
                     Style::default().fg(Color::Gray)
                 };
-                lines.push(Line::from(vec![Span::styled(format!("{}Other", prefix), style)]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("{}Other", prefix),
+                    style,
+                )]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     "Enter submit, Esc cancel",

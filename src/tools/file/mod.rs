@@ -3,8 +3,6 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-
-
 const MAX_LINES: usize = 1000;
 const MAX_LINE_LENGTH: usize = 2000;
 const MAX_BYTES: usize = 100 * 1024;
@@ -66,21 +64,20 @@ fn detect_file_type(path: &Path, header: Option<&[u8]>) -> FileType {
         .to_lowercase();
 
     let known_image: &[&str] = &[
-        "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "ico",
-        "heic", "heif", "avif", "svgz",
+        "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "ico", "heic", "heif", "avif",
+        "svgz",
     ];
     let known_video: &[&str] = &[
         "mp4", "mkv", "avi", "mov", "wmv", "webm", "m4v", "flv", "3gp", "3g2",
     ];
     let known_non_text: &[&str] = &[
-        "icns", "psd", "ai", "eps", "pdf", "doc", "docx", "dot", "dotx", "rtf",
-        "odt", "xls", "xlsx", "xlsm", "xlt", "xltx", "xltm", "ods", "ppt", "pptx",
-        "pptm", "pps", "ppsx", "odp", "pages", "numbers", "key", "zip", "rar",
-        "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz", "lz4", "br", "cab",
-        "ar", "deb", "rpm", "mp3", "wav", "flac", "ogg", "oga", "opus", "aac",
-        "m4a", "wma", "ttf", "otf", "woff", "woff2", "exe", "dll", "so", "dylib",
-        "bin", "apk", "ipa", "jar", "class", "pyc", "pyo", "wasm", "dmg", "iso",
-        "img", "sqlite", "sqlite3", "db", "db3",
+        "icns", "psd", "ai", "eps", "pdf", "doc", "docx", "dot", "dotx", "rtf", "odt", "xls",
+        "xlsx", "xlsm", "xlt", "xltx", "xltm", "ods", "ppt", "pptx", "pptm", "pps", "ppsx", "odp",
+        "pages", "numbers", "key", "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst",
+        "lz", "lz4", "br", "cab", "ar", "deb", "rpm", "mp3", "wav", "flac", "ogg", "oga", "opus",
+        "aac", "m4a", "wma", "ttf", "otf", "woff", "woff2", "exe", "dll", "so", "dylib", "bin",
+        "apk", "ipa", "jar", "class", "pyc", "pyo", "wasm", "dmg", "iso", "img", "sqlite",
+        "sqlite3", "db", "db3",
     ];
 
     if known_image.contains(&suffix.as_str()) {
@@ -104,10 +101,12 @@ fn detect_file_type(path: &Path, header: Option<&[u8]>) -> FileType {
 
     if let Some(hdr) = header {
         if let Some(ftyp) = sniff_ftyp_brand(hdr) {
-            let image_brands = ["avif", "avis", "heic", "heif", "heix", "hevc", "mif1", "msf1"];
+            let image_brands = [
+                "avif", "avis", "heic", "heif", "heix", "hevc", "mif1", "msf1",
+            ];
             let video_brands = [
-                "isom", "iso2", "iso5", "mp41", "mp42", "avc1", "mp4v", "m4v", "qt",
-                "3gp4", "3gp5", "3gp6", "3gp7", "3g2",
+                "isom", "iso2", "iso5", "mp41", "mp42", "avc1", "mp4v", "m4v", "qt", "3gp4",
+                "3gp5", "3gp6", "3gp7", "3g2",
             ];
             if image_brands.contains(&ftyp.as_str()) {
                 return FileType {
@@ -243,7 +242,10 @@ impl crate::soul::toolset::Tool for ReadFile {
             }
         };
 
-        let line_offset = arguments.get("line_offset").and_then(|v| v.as_i64()).unwrap_or(1);
+        let line_offset = arguments
+            .get("line_offset")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1);
         let n_lines = arguments
             .get("n_lines")
             .and_then(|v| v.as_u64())
@@ -262,6 +264,13 @@ impl crate::soul::toolset::Tool for ReadFile {
         if !meta.is_file() {
             return crate::soul::message::ToolReturnValue::Error {
                 error: format!("`{}` is not a file.", path.display()),
+            };
+        }
+
+        let path_str = path.to_string_lossy();
+        if crate::utils::sensitive::is_sensitive_file(path_str.as_ref()) {
+            return crate::soul::message::ToolReturnValue::Error {
+                error: crate::utils::sensitive::sensitive_file_warning(&[path_str.into_owned()]),
             };
         }
 
@@ -365,7 +374,11 @@ impl ReadFile {
         let mut message = if collected.is_empty() {
             "No lines read from file.".into()
         } else {
-            format!("{} lines read from file starting from line {}.", collected.len(), start_line)
+            format!(
+                "{} lines read from file starting from line {}.",
+                collected.len(),
+                start_line
+            )
         };
         message += &format!(" Total lines in file: {total_lines}.");
         if max_lines_reached {
@@ -457,7 +470,11 @@ impl ReadFile {
         let mut message = if out_lines.is_empty() {
             "No lines read from file.".into()
         } else {
-            format!("{} lines read from file starting from line {}.", out_lines.len(), start_line)
+            format!(
+                "{} lines read from file starting from line {}.",
+                out_lines.len(),
+                start_line
+            )
         };
         message += &format!(" Total lines in file: {total_lines}.");
         if max_lines_reached {
@@ -529,7 +546,10 @@ impl crate::soul::toolset::Tool for WriteFile {
 
         if mode != "overwrite" && mode != "append" {
             return crate::soul::message::ToolReturnValue::Error {
-                error: format!("Invalid write mode: `{}`. Use `overwrite` or `append`.", mode),
+                error: format!(
+                    "Invalid write mode: `{}`. Use `overwrite` or `append`.",
+                    mode
+                ),
             };
         }
 
@@ -726,7 +746,8 @@ impl crate::soul::toolset::Tool for StrReplaceFile {
 
         if current == original {
             return crate::soul::message::ToolReturnValue::Error {
-                error: "No replacements were made. The old string was not found in the file.".into(),
+                error: "No replacements were made. The old string was not found in the file."
+                    .into(),
             };
         }
 
@@ -800,7 +821,8 @@ impl crate::soul::toolset::Tool for Glob {
 
         if pattern.starts_with("**") {
             return crate::soul::message::ToolReturnValue::Error {
-                error: "Patterns starting with '**' are not allowed. Use a more specific pattern.".into(),
+                error: "Patterns starting with '**' are not allowed. Use a more specific pattern."
+                    .into(),
             };
         }
 
@@ -846,11 +868,7 @@ impl crate::soul::toolset::Tool for Glob {
                 for entry in paths {
                     match entry {
                         Ok(path) => {
-                            let include = if include_dirs {
-                                true
-                            } else {
-                                path.is_file()
-                            };
+                            let include = if include_dirs { true } else { path.is_file() };
                             if include {
                                 matches.push(path);
                             }
@@ -942,7 +960,10 @@ impl crate::soul::toolset::Tool for Grep {
             }
         };
 
-        let path_arg = arguments.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let path_arg = arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".");
         let output_mode = arguments
             .get("output_mode")
             .and_then(|v| v.as_str())
@@ -1072,7 +1093,11 @@ impl crate::soul::toolset::Tool for Grep {
 
         crate::soul::message::ToolReturnValue::Ok {
             output,
-            message: if message.is_empty() { None } else { Some(message) },
+            message: if message.is_empty() {
+                None
+            } else {
+                Some(message)
+            },
         }
     }
 }
@@ -1158,9 +1183,17 @@ impl crate::soul::toolset::Tool for ReadMediaFile {
             };
         }
 
+        let path_str = path.to_string_lossy();
+        if crate::utils::sensitive::is_sensitive_file(path_str.as_ref()) {
+            return crate::soul::message::ToolReturnValue::Error {
+                error: crate::utils::sensitive::sensitive_file_warning(&[path_str.into_owned()]),
+            };
+        }
+
         match tokio::fs::read(&path).await {
             Ok(data) => {
-                let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data);
+                let encoded =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data);
                 let len = encoded.len();
                 crate::soul::message::ToolReturnValue::Ok {
                     output: encoded,

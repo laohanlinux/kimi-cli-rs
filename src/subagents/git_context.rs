@@ -72,7 +72,7 @@ pub async fn collect_git_context(work_dir: &Path) -> String {
 }
 
 async fn run_git(args: &[&str], cwd: &str) -> Option<String> {
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = crate::utils::subprocess_env::git_tokio_command();
     cmd.arg("-C").arg(cwd).args(args);
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
 

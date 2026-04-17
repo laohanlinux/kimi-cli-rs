@@ -53,7 +53,10 @@ impl SlashCommandRegistry {
 
     /// Consumes the registry and returns all commands.
     pub fn into_commands(self) -> Vec<std::sync::Arc<SlashCommand>> {
-        self.commands.into_values().map(std::sync::Arc::new).collect()
+        self.commands
+            .into_values()
+            .map(std::sync::Arc::new)
+            .collect()
     }
 }
 
@@ -188,7 +191,10 @@ async fn cmd_init(soul: &mut crate::soul::kimisoul::KimiSoul, _args: &str) {
 ## Notes
 <!-- Add any project-specific notes here -->
 "#,
-        work_dir.file_name().unwrap_or(work_dir.as_os_str()).to_string_lossy(),
+        work_dir
+            .file_name()
+            .unwrap_or(work_dir.as_os_str())
+            .to_string_lossy(),
         project_type,
         lang_text,
     );
@@ -290,7 +296,9 @@ async fn cmd_add_dir(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
         return;
     }
     let path = if path.starts_with("~/") {
-        dirs::home_dir().map(|h| h.join(&path[2..])).unwrap_or_else(|| std::path::PathBuf::from(path))
+        dirs::home_dir()
+            .map(|h| h.join(&path[2..]))
+            .unwrap_or_else(|| std::path::PathBuf::from(path))
     } else {
         std::path::PathBuf::from(path)
     };
@@ -310,12 +318,21 @@ async fn cmd_add_dir(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
     }
     // Check containment within work_dir.
     if !path.starts_with(work_dir) {
-        tracing::warn!("Directory must be inside the work directory: {}", path.display());
+        tracing::warn!(
+            "Directory must be inside the work directory: {}",
+            path.display()
+        );
         return;
     }
     // Check duplicates.
     let path_str = path.to_string_lossy().to_string();
-    if soul.runtime.session.state.additional_dirs.contains(&path_str) {
+    if soul
+        .runtime
+        .session
+        .state
+        .additional_dirs
+        .contains(&path_str)
+    {
         tracing::info!("Directory already added: {}", path.display());
         return;
     }
@@ -333,19 +350,25 @@ async fn cmd_add_dir(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
 }
 
 async fn cmd_export(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
-    let target = args.trim();
-    let target_path = if target.is_empty() {
-        let share_dir = crate::share::get_share_dir().unwrap_or_else(|_| std::env::temp_dir());
-        share_dir.join("exports").join(format!("{}.md", soul.runtime.session.id))
-    } else {
-        std::path::PathBuf::from(target)
-    };
-    if let Some(parent) = target_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let share_dir = crate::share::get_share_dir().unwrap_or_else(|_| std::env::temp_dir());
+    let default_dir = share_dir.join("exports");
+    if let Err(e) = tokio::fs::create_dir_all(&default_dir).await {
+        tracing::warn!("Failed to create exports directory: {e}");
+        return;
     }
-    match std::fs::copy(&soul.runtime.session.context_file, &target_path) {
-        Ok(_) => tracing::info!("Exported context to {}", target_path.display()),
-        Err(e) => tracing::warn!("Failed to export context: {}", e),
+    let work_dir = soul.runtime.session.work_dir.display().to_string();
+    match crate::utils::export::perform_export(
+        soul.context().history(),
+        &soul.runtime.session.id,
+        &work_dir,
+        soul.context().token_count(),
+        args.trim(),
+        &default_dir,
+    )
+    .await
+    {
+        Ok(path) => tracing::info!("Exported session to {}", path.display()),
+        Err(msg) => tracing::warn!("{msg}"),
     }
 }
 
@@ -357,6 +380,10 @@ async fn cmd_import(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
     }
     let target_path = std::path::PathBuf::from(target);
     if target_path.is_file() {
+        if let Err(msg) = crate::utils::export::validate_import_file(&target_path).await {
+            tracing::warn!("{msg}");
+            return;
+        }
         match tokio::fs::read_to_string(&target_path).await {
             Ok(content) => {
                 let mut file = match tokio::fs::OpenOptions::new()
@@ -390,6 +417,10 @@ async fn cmd_import(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
         .sessions_dir();
         let session_file = sessions_dir.join(target).join("context.jsonl");
         if session_file.is_file() {
+            if let Err(msg) = crate::utils::export::validate_import_file(&session_file).await {
+                tracing::warn!("{msg}");
+                return;
+            }
             match tokio::fs::read_to_string(&session_file).await {
                 Ok(content) => {
                     let mut file = match tokio::fs::OpenOptions::new()
@@ -419,7 +450,13 @@ async fn cmd_import(soul: &mut crate::soul::kimisoul::KimiSoul, args: &str) {
 }
 
 async fn cmd_login() {
-    match tokio::task::spawn_blocking(|| std::process::Command::new("kimi").arg("login").status()).await {
+    match tokio::task::spawn_blocking(|| {
+        crate::utils::subprocess_env::kimi_std_command()
+            .arg("login")
+            .status()
+    })
+    .await
+    {
         Ok(Ok(status)) if status.success() => {
             tracing::info!("Login succeeded; reload the shell to pick up the new config.");
         }
@@ -436,7 +473,13 @@ async fn cmd_login() {
 }
 
 async fn cmd_logout() {
-    match tokio::task::spawn_blocking(|| std::process::Command::new("kimi").arg("logout").status()).await {
+    match tokio::task::spawn_blocking(|| {
+        crate::utils::subprocess_env::kimi_std_command()
+            .arg("logout")
+            .status()
+    })
+    .await
+    {
         Ok(Ok(status)) if status.success() => {
             tracing::info!("Logout succeeded; reload the shell to pick up the new config.");
         }

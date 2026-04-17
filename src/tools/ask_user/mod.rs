@@ -92,19 +92,43 @@ impl crate::soul::toolset::Tool for AskUserQuestion {
 
         let mut items = Vec::new();
         for (idx, q) in questions_arr.iter().enumerate() {
-            let question = q.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let header = q.get("header").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let multi_select = q.get("multi_select").and_then(|v| v.as_bool()).unwrap_or(false);
+            let question = q
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let header = q
+                .get("header")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let multi_select = q
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut options = Vec::new();
             if let Some(opts) = q.get("options").and_then(|v| v.as_array()) {
                 for opt in opts {
-                    let label = opt.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let desc = opt.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    options.push(crate::wire::types::QuestionOption { label, description: desc });
+                    let label = opt
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let desc = opt
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    options.push(crate::wire::types::QuestionOption {
+                        label,
+                        description: desc,
+                    });
                 }
             }
             // Auto-append "Other" option if not present.
-            let has_other = options.iter().any(|o| o.label.eq_ignore_ascii_case("other"));
+            let has_other = options
+                .iter()
+                .any(|o| o.label.eq_ignore_ascii_case("other"));
             if !has_other {
                 options.push(crate::wire::types::QuestionOption {
                     label: "Other".into(),
@@ -167,10 +191,22 @@ pub async fn wait_for_question_response(
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let msg = match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Ok(m)) => m,
-            Ok(Err(_)) => return Err(crate::error::KimiCliError::Generic("Wire channel closed".into())),
-            Err(_) => return Err(crate::error::KimiCliError::Generic("Question timed out".into())),
+            Ok(Err(_)) => {
+                return Err(crate::error::KimiCliError::Generic(
+                    "Wire channel closed".into(),
+                ));
+            }
+            Err(_) => {
+                return Err(crate::error::KimiCliError::Generic(
+                    "Question timed out".into(),
+                ));
+            }
         };
-        if let crate::wire::types::WireMessage::QuestionResponse { request_id: rid, answers } = msg {
+        if let crate::wire::types::WireMessage::QuestionResponse {
+            request_id: rid,
+            answers,
+        } = msg
+        {
             if rid == request_id {
                 return Ok(answers);
             }

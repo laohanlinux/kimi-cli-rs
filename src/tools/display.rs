@@ -21,7 +21,11 @@ fn default_new_start() -> usize {
 }
 
 impl DiffDisplayBlock {
-    pub fn new(path: impl Into<String>, old_text: impl Into<String>, new_text: impl Into<String>) -> Self {
+    pub fn new(
+        path: impl Into<String>,
+        old_text: impl Into<String>,
+        new_text: impl Into<String>,
+    ) -> Self {
         Self {
             block_type: "diff".into(),
             path: path.into(),

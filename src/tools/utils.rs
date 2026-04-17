@@ -11,16 +11,19 @@ pub const DEFAULT_MAX_LINE_LENGTH: usize = 2_000;
 
 /// Load a tool description from a file, rendered via MiniJinja with `${var}` syntax.
 /// Undefined variables are kept as placeholders instead of raising errors.
-pub fn load_desc(path: &Path, context: Option<&serde_json::Map<String, Value>>) -> crate::error::Result<String> {
-    let description = std::fs::read_to_string(path)
-        .map_err(crate::error::KimiCliError::Io)?;
+pub fn load_desc(
+    path: &Path,
+    context: Option<&serde_json::Map<String, Value>>,
+) -> crate::error::Result<String> {
+    let description = std::fs::read_to_string(path).map_err(crate::error::KimiCliError::Io)?;
 
     // Replace ${var} with {{ var }} for MiniJinja compatibility.
     let re = regex::Regex::new(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}").unwrap();
     let template_text = re.replace_all(&description, "{{ $1 }}");
 
     let env = minijinja::Environment::new();
-    let template = env.template_from_str(&template_text)
+    let template = env
+        .template_from_str(&template_text)
         .map_err(|e| crate::error::KimiCliError::Generic(format!("template parse error: {e}")))?;
 
     let ctx: std::collections::HashMap<String, String> = context
@@ -39,13 +42,20 @@ pub fn load_desc(path: &Path, context: Option<&serde_json::Map<String, Value>>) 
             if let Some(ctx_map) = context {
                 for (k, v) in ctx_map.iter() {
                     let placeholder = format!("${{{k}}}");
-                    let value = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                    let value = v
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string());
                     result = result.replace(&placeholder, &value);
                 }
             }
             result
         }
-        Err(e) => return Err(crate::error::KimiCliError::Generic(format!("template render error: {e}"))),
+        Err(e) => {
+            return Err(crate::error::KimiCliError::Generic(format!(
+                "template render error: {e}"
+            )));
+        }
     };
 
     Ok(rendered)
@@ -132,7 +142,10 @@ impl ToolResultBuilder {
 
             let original_line = line;
             let remaining_chars = self.max_chars.saturating_sub(self.n_chars);
-            let limit = self.max_line_length.map(|l| remaining_chars.min(l)).unwrap_or(remaining_chars);
+            let limit = self
+                .max_line_length
+                .map(|l| remaining_chars.min(l))
+                .unwrap_or(remaining_chars);
             let processed = truncate_line(line, limit, &self.marker);
             if processed != original_line {
                 self.truncation_happened = true;
@@ -202,7 +215,11 @@ impl ToolResultBuilder {
         }
         ToolReturnValue::Ok {
             output,
-            message: if final_message.is_empty() { None } else { Some(final_message) },
+            message: if final_message.is_empty() {
+                None
+            } else {
+                Some(final_message)
+            },
         }
     }
 
@@ -222,7 +239,11 @@ impl ToolResultBuilder {
         let block = BriefDisplayBlock::new(brief);
         self.display.insert(0, serde_json::to_value(block).unwrap());
         ToolReturnValue::Error {
-            error: if final_message.is_empty() { output.clone() } else { final_message },
+            error: if final_message.is_empty() {
+                output.clone()
+            } else {
+                final_message
+            },
         }
     }
 }
@@ -298,7 +319,9 @@ mod tests {
         b.write("hello world this is long");
         let result = b.ok("Done", None);
         match result {
-            ToolReturnValue::Ok { message: Some(msg), .. } => {
+            ToolReturnValue::Ok {
+                message: Some(msg), ..
+            } => {
                 assert!(msg.contains("truncated"));
             }
             _ => panic!("expected Ok with message"),

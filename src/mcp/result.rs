@@ -11,31 +11,23 @@ pub fn convert_mcp_result(result: &CallToolResult) -> crate::soul::message::Tool
 
     for part in &result.content {
         let converted = match &part.raw {
-            RawContent::Text(text_content) => {
-                Some(crate::soul::message::ContentPart::Text {
-                    text: text_content.text.clone(),
-                })
-            }
+            RawContent::Text(text_content) => Some(crate::soul::message::ContentPart::Text {
+                text: text_content.text.clone(),
+            }),
             RawContent::Image(image_content) => {
                 // Build a data URL for the image.
                 let url = format!(
                     "data:{};base64,{}",
-                    image_content.mime_type,
-                    image_content.data
+                    image_content.mime_type, image_content.data
                 );
-                Some(crate::soul::message::ContentPart::ImageUrl {
-                    url,
-                })
+                Some(crate::soul::message::ContentPart::ImageUrl { url })
             }
             RawContent::Audio(audio_content) => {
                 let url = format!(
                     "data:{};base64,{}",
-                    audio_content.mime_type,
-                    audio_content.data
+                    audio_content.mime_type, audio_content.data
                 );
-                Some(crate::soul::message::ContentPart::AudioUrl {
-                    url,
-                })
+                Some(crate::soul::message::ContentPart::AudioUrl { url })
             }
             RawContent::Resource(resource) => {
                 // For embedded resources, try to extract text; otherwise skip.
@@ -49,11 +41,9 @@ pub fn convert_mcp_result(result: &CallToolResult) -> crate::soul::message::Tool
                 };
                 Some(crate::soul::message::ContentPart::Text { text })
             }
-            RawContent::ResourceLink(link) => {
-                Some(crate::soul::message::ContentPart::Text {
-                    text: format!("[Resource link: {}]", link.uri),
-                })
-            }
+            RawContent::ResourceLink(link) => Some(crate::soul::message::ContentPart::Text {
+                text: format!("[Resource link: {}]", link.uri),
+            }),
         };
 
         let Some(converted) = converted else { continue };
@@ -102,7 +92,9 @@ pub fn convert_mcp_result(result: &CallToolResult) -> crate::soul::message::Tool
     let is_error = result.is_error.unwrap_or(false);
     if is_error {
         crate::soul::message::ToolReturnValue::Error {
-            error: "Tool returned an error. The output may be an error message or incomplete output.".into(),
+            error:
+                "Tool returned an error. The output may be an error message or incomplete output."
+                    .into(),
         }
     } else {
         crate::soul::message::ToolReturnValue::Parts { parts: content }

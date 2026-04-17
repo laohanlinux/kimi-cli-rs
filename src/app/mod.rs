@@ -7,7 +7,10 @@ pub enum ShellOutcome {
     /// User exited normally.
     Exit,
     /// Reload with an optional session ID and prefill text.
-    Reload { session_id: Option<String>, prefill_text: Option<String> },
+    Reload {
+        session_id: Option<String>,
+        prefill_text: Option<String>,
+    },
     /// Switch to the web interface.
     SwitchToWeb { session_id: Option<String> },
     /// Switch to the vis interface.
@@ -48,15 +51,19 @@ impl KimiCLI {
         let oauth = crate::auth::oauth::OAuthManager::default();
 
         let (model, mut provider) = if let Some(name) = model_name {
-            config
-                .models
-                .get(name)
-                .and_then(|m| config.providers.get(&m.provider).map(|p| (m.clone(), p.clone())))
+            config.models.get(name).and_then(|m| {
+                config
+                    .providers
+                    .get(&m.provider)
+                    .map(|p| (m.clone(), p.clone()))
+            })
         } else if !config.default_model.is_empty() {
-            config
-                .models
-                .get(&config.default_model)
-                .and_then(|m| config.providers.get(&m.provider).map(|p| (m.clone(), p.clone())))
+            config.models.get(&config.default_model).and_then(|m| {
+                config
+                    .providers
+                    .get(&m.provider)
+                    .map(|p| (m.clone(), p.clone()))
+            })
         } else {
             None
         }
@@ -79,16 +86,23 @@ impl KimiCLI {
             )
         });
 
-        if let Some(resolved_key) = oauth.resolve_api_key(&provider.api_key, provider.oauth.as_ref()).await {
+        if let Some(resolved_key) = oauth
+            .resolve_api_key(&provider.api_key, provider.oauth.as_ref())
+            .await
+        {
             provider.api_key = resolved_key;
         }
 
         let thinking = thinking.unwrap_or(config.default_thinking);
         let yolo = yolo || config.default_yolo;
-        let _plan_mode = if resumed { plan_mode } else { plan_mode || config.default_plan_mode };
+        let _plan_mode = if resumed {
+            plan_mode
+        } else {
+            plan_mode || config.default_plan_mode
+        };
 
-        let llm = crate::llm::create_llm(&provider, &model, Some(thinking), Some(&session.id))
-            .await?;
+        let llm =
+            crate::llm::create_llm(&provider, &model, Some(thinking), Some(&session.id)).await?;
 
         let runtime = crate::soul::agent::Runtime::create(
             config,
@@ -154,7 +168,10 @@ impl KimiCLI {
     pub async fn run_with_wire(
         &mut self,
         user_input: Vec<crate::soul::message::ContentPart>,
-        ui_loop_fn: impl FnOnce(crate::wire::Wire) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+        ui_loop_fn: impl FnOnce(
+            crate::wire::Wire,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
         cancel: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> crate::error::Result<crate::soul::TurnOutcome> {
         let cancel_rx = cancel.unwrap_or_else(|| tokio::sync::watch::channel(false).1);
@@ -208,7 +225,9 @@ impl KimiCLI {
         prefill_text: Option<&str>,
     ) -> crate::error::Result<ShellOutcome> {
         if let Some(cmd) = command {
-            let parts = vec![crate::soul::message::ContentPart::Text { text: cmd.to_string() }];
+            let parts = vec![crate::soul::message::ContentPart::Text {
+                text: cmd.to_string(),
+            }];
             let _outcome = self.run(parts).await?;
             return Ok(ShellOutcome::Exit);
         }

@@ -79,7 +79,10 @@ impl SimpleCompaction {
         &self,
         messages: &[crate::soul::message::Message],
         custom_instruction: &str,
-    ) -> (Option<crate::soul::message::Message>, Vec<crate::soul::message::Message>) {
+    ) -> (
+        Option<crate::soul::message::Message>,
+        Vec<crate::soul::message::Message>,
+    ) {
         if messages.is_empty() || self.max_preserved_messages == 0 {
             return (None, messages.to_vec());
         }
@@ -117,14 +120,16 @@ impl SimpleCompaction {
         };
 
         for (i, msg) in to_compact.iter().enumerate() {
-            compact_message.content.push(crate::soul::message::ContentPart::Text {
-                text: format!("## Message {}\nRole: {}\nContent:\n", i + 1, msg.role),
-            });
+            compact_message
+                .content
+                .push(crate::soul::message::ContentPart::Text {
+                    text: format!("## Message {}\nRole: {}\nContent:\n", i + 1, msg.role),
+                });
             for part in &msg.content {
                 if let crate::soul::message::ContentPart::Text { text } = part {
-                    compact_message.content.push(crate::soul::message::ContentPart::Text {
-                        text: text.clone(),
-                    });
+                    compact_message
+                        .content
+                        .push(crate::soul::message::ContentPart::Text { text: text.clone() });
                 }
             }
         }
@@ -136,9 +141,9 @@ impl SimpleCompaction {
                 "\n\n**User's Custom Compaction Instruction:**\n{custom_instruction}"
             ));
         }
-        compact_message.content.push(crate::soul::message::ContentPart::Text {
-            text: prompt_text,
-        });
+        compact_message
+            .content
+            .push(crate::soul::message::ContentPart::Text { text: prompt_text });
 
         (Some(compact_message), to_preserve)
     }
@@ -176,7 +181,8 @@ impl Compaction for SimpleCompaction {
                     crate::soul::message::Message {
                         role: "user".into(),
                         content: vec![crate::soul::message::ContentPart::Text {
-                            text: "Previous context has been compacted. Here is the summary:".into(),
+                            text: "Previous context has been compacted. Here is the summary:"
+                                .into(),
                         }],
                         tool_calls: None,
                         tool_call_id: None,

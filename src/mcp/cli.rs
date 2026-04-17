@@ -104,7 +104,9 @@ pub async fn run(cmd: McpCommand) -> crate::error::Result<()> {
             let server_config = match transport.as_str() {
                 "stdio" => {
                     if server_args.is_empty() {
-                        eprintln!("For stdio transport, provide the command to start the MCP server.");
+                        eprintln!(
+                            "For stdio transport, provide the command to start the MCP server."
+                        );
                         std::process::exit(1);
                     }
                     let command = server_args[0].clone();
@@ -122,7 +124,9 @@ pub async fn run(cmd: McpCommand) -> crate::error::Result<()> {
                         std::process::exit(1);
                     }
                     if server_args.len() > 1 {
-                        eprintln!("Multiple targets provided. Supply a single URL for http transport.");
+                        eprintln!(
+                            "Multiple targets provided. Supply a single URL for http transport."
+                        );
                         std::process::exit(1);
                     }
                     let headers = parse_key_value(&header, ":", true);
@@ -140,7 +144,10 @@ pub async fn run(cmd: McpCommand) -> crate::error::Result<()> {
             };
             config.servers.insert(name.clone(), server_config);
             save_mcp_config(&config);
-            println!("Added MCP server '{name}' to {}.", get_global_mcp_config_file().display());
+            println!(
+                "Added MCP server '{name}' to {}.",
+                get_global_mcp_config_file().display()
+            );
         }
         McpCommand::Remove { name } => {
             let mut config = load_mcp_config();
@@ -187,9 +194,11 @@ pub async fn run(cmd: McpCommand) -> crate::error::Result<()> {
                 }
             };
             match server {
-                crate::config::McpServerConfig::Http { url, auth: Some(ref a), .. }
-                    if a == "oauth" =>
-                {
+                crate::config::McpServerConfig::Http {
+                    url,
+                    auth: Some(ref a),
+                    ..
+                } if a == "oauth" => {
                     println!("Authorizing with '{name}'...");
                     let conn = crate::mcp::client::connect_http(&url, &HashMap::new()).await?;
                     let tools = conn.peer.list_all_tools().await.map_err(|e| {
@@ -236,9 +245,10 @@ pub async fn run(cmd: McpCommand) -> crate::error::Result<()> {
                     crate::mcp::client::connect_http(url, headers).await?
                 }
             };
-            let tools = conn.peer.list_all_tools().await.map_err(|e| {
-                crate::error::KimiCliError::McpRuntime(format!("test failed: {e}"))
-            })?;
+            let tools =
+                conn.peer.list_all_tools().await.map_err(|e| {
+                    crate::error::KimiCliError::McpRuntime(format!("test failed: {e}"))
+                })?;
             println!("Connected to '{name}'");
             println!("  Available tools: {}", tools.len());
             if !tools.is_empty() {

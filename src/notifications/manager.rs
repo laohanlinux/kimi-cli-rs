@@ -22,7 +22,11 @@ pub struct NotificationManager {
 
 impl NotificationManager {
     /// Binds the notification manager to the root wire hub.
-    pub fn bind_root_wire_hub(&self, _root_wire_hub: &std::sync::Arc<crate::wire::root_hub::RootWireHub>) {}
+    pub fn bind_root_wire_hub(
+        &self,
+        _root_wire_hub: &std::sync::Arc<crate::wire::root_hub::RootWireHub>,
+    ) {
+    }
 
     /// Creates a new notification manager rooted at the given path.
     pub fn new(root: &Path, config: crate::config::NotificationConfig) -> Self {
@@ -91,7 +95,10 @@ impl NotificationManager {
     /// Reconciles pending notifications against a claim deadline.
     pub fn reconcile(&self, _before_claim_ms: u64) -> Vec<Notification> {
         // Returns all notifications from the store that are older than the claim deadline.
-        self.store.as_ref().map(|s| s.load_all()).unwrap_or_default()
+        self.store
+            .as_ref()
+            .map(|s| s.load_all())
+            .unwrap_or_default()
     }
 }
 
@@ -131,19 +138,33 @@ async fn deliver_desktop_notification(notification: &Notification) {
             "display notification {:?} with title {:?}",
             notification.body, notification.title
         );
-        let _ = tokio::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
+        let mut cmd = tokio::process::Command::new("osascript");
+        crate::utils::subprocess_env::apply_to_tokio(
+            &mut cmd,
+            crate::utils::subprocess_env::get_clean_env(),
+        );
+        let _ = cmd.arg("-e").arg(&script).output().await;
+    }
+    // Freedesktop `notify-send` (common on Linux/BSD with libnotify); no-op if missing from PATH.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut cmd = tokio::process::Command::new("notify-send");
+        crate::utils::subprocess_env::apply_to_tokio(
+            &mut cmd,
+            crate::utils::subprocess_env::get_clean_env(),
+        );
+        let _ = cmd
+            .arg(&notification.title)
+            .arg(&notification.body)
             .output()
             .await;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     {
-        // Desktop notifications are only implemented for macOS in this port.
         tracing::debug!(
             title = %notification.title,
             body = %notification.body,
-            "desktop notification (stub on non-macOS)"
+            "desktop notification not available on this platform (use macOS, Linux with notify-send, or wire/UI)"
         );
     }
 }

@@ -30,7 +30,9 @@ where
 }
 
 /// Model capability flags.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display, strum::EnumString,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum ModelCapability {
@@ -41,7 +43,9 @@ pub enum ModelCapability {
 }
 
 /// Terminal color theme.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, strum::Display, strum::EnumString,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum Theme {
@@ -115,15 +119,33 @@ pub struct BackgroundConfig {
     pub agent_task_timeout_s: usize,
 }
 
-fn default_max_running_tasks() -> usize { 4 }
-fn default_read_max_bytes() -> usize { 30_000 }
-fn default_notification_tail_lines() -> usize { 20 }
-fn default_notification_tail_chars() -> usize { 3_000 }
-fn default_wait_poll_interval_ms() -> usize { 500 }
-fn default_worker_heartbeat_interval_ms() -> usize { 5_000 }
-fn default_worker_stale_after_ms() -> usize { 15_000 }
-fn default_kill_grace_period_ms() -> usize { 2_000 }
-fn default_agent_task_timeout_s() -> usize { 900 }
+fn default_max_running_tasks() -> usize {
+    4
+}
+fn default_read_max_bytes() -> usize {
+    30_000
+}
+fn default_notification_tail_lines() -> usize {
+    20
+}
+fn default_notification_tail_chars() -> usize {
+    3_000
+}
+fn default_wait_poll_interval_ms() -> usize {
+    500
+}
+fn default_worker_heartbeat_interval_ms() -> usize {
+    5_000
+}
+fn default_worker_stale_after_ms() -> usize {
+    15_000
+}
+fn default_kill_grace_period_ms() -> usize {
+    2_000
+}
+fn default_agent_task_timeout_s() -> usize {
+    900
+}
 
 impl Default for BackgroundConfig {
     fn default() -> Self {
@@ -155,8 +177,12 @@ pub struct NotificationConfig {
     pub sound: bool,
 }
 
-fn default_claim_stale_after_ms() -> usize { 15_000 }
-fn default_true() -> bool { true }
+fn default_claim_stale_after_ms() -> usize {
+    15_000
+}
+fn default_true() -> bool {
+    true
+}
 
 impl Default for NotificationConfig {
     fn default() -> Self {
@@ -203,7 +229,9 @@ pub struct McpClientConfig {
     pub tool_call_timeout_ms: usize,
 }
 
-fn default_tool_call_timeout_ms() -> usize { 60_000 }
+fn default_tool_call_timeout_ms() -> usize {
+    60_000
+}
 
 impl Default for McpClientConfig {
     fn default() -> Self {
@@ -269,7 +297,9 @@ pub struct HookDef {
     pub timeout: u64,
 }
 
-fn default_hook_timeout() -> u64 { 30 }
+fn default_hook_timeout() -> u64 {
+    30
+}
 
 /// Main configuration structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,7 +447,7 @@ pub fn load_config_from_string(config_string: &str) -> crate::error::Result<Conf
             Err(toml_err) => {
                 return Err(crate::error::KimiCliError::Config(format!(
                     "Invalid configuration text: {json_err}; {toml_err}"
-                )))
+                )));
             }
         },
     };
@@ -454,7 +484,11 @@ fn migrate_json_config_to_toml() -> crate::error::Result<()> {
     if !old_path.exists() || new_path.exists() {
         return Ok(());
     }
-    tracing::info!("Migrating legacy config from {} to {}", old_path.display(), new_path.display());
+    tracing::info!(
+        "Migrating legacy config from {} to {}",
+        old_path.display(),
+        new_path.display()
+    );
     let text = std::fs::read_to_string(&old_path)?;
     let data: serde_json::Value = serde_json::from_str(&text)?;
     let config: Config = serde_json::from_value(data)?;
@@ -582,7 +616,9 @@ mod tests {
 
     #[test]
     fn load_config_from_string_invalid_error() {
-        let err = load_config_from_string("not valid toml or json").unwrap_err().to_string();
+        let err = load_config_from_string("not valid toml or json")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Invalid configuration text"));
     }
 

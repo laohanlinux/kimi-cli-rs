@@ -72,14 +72,21 @@ impl Context {
         let role = record.get("role").and_then(|v| v.as_str());
         match role {
             Some("_system_prompt") => {
-                self.system_prompt = record.get("content").and_then(|v| v.as_str()).map(String::from);
+                self.system_prompt = record
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
             }
             Some("_usage") => {
-                self.token_count = record.get("token_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                self.token_count = record
+                    .get("token_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
                 self.pending_token_estimate = 0;
             }
             Some("_checkpoint") => {
-                self.next_checkpoint_id = record.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as usize + 1;
+                self.next_checkpoint_id =
+                    record.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as usize + 1;
             }
             _ => {
                 let msg: Message = serde_json::from_value(record)?;
@@ -124,7 +131,8 @@ impl Context {
             .create(true)
             .open(&self.file_backend)
             .await?;
-        file.write_all(serde_json::to_string(&record)?.as_bytes()).await?;
+        file.write_all(serde_json::to_string(&record)?.as_bytes())
+            .await?;
         file.write_all(b"\n").await?;
         Ok(())
     }
@@ -146,7 +154,8 @@ impl Context {
             .create(true)
             .open(&self.file_backend)
             .await?;
-        file.write_all(serde_json::to_string(&record)?.as_bytes()).await?;
+        file.write_all(serde_json::to_string(&record)?.as_bytes())
+            .await?;
         file.write_all(b"\n").await?;
         Ok(())
     }
@@ -154,6 +163,12 @@ impl Context {
     /// Returns the full message history.
     pub fn history(&self) -> &[Message] {
         &self.history
+    }
+
+    /// Last persisted usage token count (from `_usage` marker), if any.
+    #[must_use]
+    pub fn token_count(&self) -> usize {
+        self.token_count
     }
 
     /// Returns the current system prompt, if any.
@@ -169,7 +184,9 @@ impl Context {
         let line = serde_json::to_string(&record)?;
 
         if self.file_backend.exists() {
-            let existing = tokio::fs::read_to_string(&self.file_backend).await.unwrap_or_default();
+            let existing = tokio::fs::read_to_string(&self.file_backend)
+                .await
+                .unwrap_or_default();
             let tmp = self.file_backend.with_extension("tmp");
             let mut file = tokio::fs::File::create(&tmp).await?;
             file.write_all(line.as_bytes()).await?;
@@ -221,7 +238,10 @@ impl Context {
             kept.push(trimmed);
             if let Ok(record) = serde_json::from_str::<serde_json::Value>(trimmed) {
                 if record.get("role").and_then(|v| v.as_str()) == Some("_checkpoint") {
-                    if record.get("id").and_then(|v| v.as_u64()).map(|id| id as usize)
+                    if record
+                        .get("id")
+                        .and_then(|v| v.as_u64())
+                        .map(|id| id as usize)
                         == Some(checkpoint_id)
                     {
                         found = true;
@@ -231,7 +251,10 @@ impl Context {
             }
         }
         if !found {
-            tracing::warn!("checkpoint {} not found, no revert performed", checkpoint_id);
+            tracing::warn!(
+                "checkpoint {} not found, no revert performed",
+                checkpoint_id
+            );
             return Ok(());
         }
         if let Some(rotated) = self.next_available_rotation() {
@@ -297,7 +320,9 @@ mod tests {
 
         let msg1 = Message {
             role: "user".into(),
-            content: vec![crate::soul::message::ContentPart::Text { text: "hello".into() }],
+            content: vec![crate::soul::message::ContentPart::Text {
+                text: "hello".into(),
+            }],
             tool_calls: None,
             tool_call_id: None,
         };
@@ -306,7 +331,9 @@ mod tests {
 
         let msg2 = Message {
             role: "assistant".into(),
-            content: vec![crate::soul::message::ContentPart::Text { text: "world".into() }],
+            content: vec![crate::soul::message::ContentPart::Text {
+                text: "world".into(),
+            }],
             tool_calls: None,
             tool_call_id: None,
         };
@@ -315,7 +342,9 @@ mod tests {
 
         let msg3 = Message {
             role: "user".into(),
-            content: vec![crate::soul::message::ContentPart::Text { text: "after".into() }],
+            content: vec![crate::soul::message::ContentPart::Text {
+                text: "after".into(),
+            }],
             tool_calls: None,
             tool_call_id: None,
         };

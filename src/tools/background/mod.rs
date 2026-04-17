@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-fn _ensure_root(runtime: &crate::soul::agent::Runtime) -> Option<crate::soul::message::ToolReturnValue> {
+fn _ensure_root(
+    runtime: &crate::soul::agent::Runtime,
+) -> Option<crate::soul::message::ToolReturnValue> {
     if runtime.role != "root" {
         return Some(crate::soul::message::ToolReturnValue::Error {
             error: "Background tasks can only be managed by the root agent.".into(),
@@ -27,7 +29,13 @@ fn _format_task_output(
     output_preview_bytes: usize,
     output_truncated: bool,
 ) -> String {
-    let terminal_reason = if running { "running" } else if exit_code == Some(0) { "completed" } else { "failed" };
+    let terminal_reason = if running {
+        "running"
+    } else if exit_code == Some(0) {
+        "completed"
+    } else {
+        "failed"
+    };
     let output_path_str = output_path.to_string_lossy();
     let mut lines = vec![
         format!("retrieval_status: {retrieval_status}"),
@@ -59,7 +67,11 @@ fn _format_task_output(
     lines.push(format!("full_output_available: {full_output_available}"));
     lines.push("full_output_tool: ReadFile".into());
     lines.push(full_output_hint);
-    let rendered_output = if output.is_empty() { "[no output available]".into() } else { output.into() };
+    let rendered_output = if output.is_empty() {
+        "[no output available]".into()
+    } else {
+        output.into()
+    };
     let final_output = if output_truncated {
         format!("[Truncated. Full output: {output_path_str}]\n\n{rendered_output}")
     } else {
@@ -72,11 +84,20 @@ fn _format_task_output(
 }
 
 fn _format_task(task_id: &str, command: &str, running: bool, exit_code: Option<i32>) -> String {
-    let status = if running { "running" } else if exit_code == Some(0) { "completed" } else { "failed" };
+    let status = if running {
+        "running"
+    } else if exit_code == Some(0) {
+        "completed"
+    } else {
+        "failed"
+    };
     format!("task_id: {task_id}\nstatus: {status}\ncommand: {command}")
 }
 
-fn _format_task_list(tasks: &[crate::background::manager::BackgroundTask], _active_only: bool) -> String {
+fn _format_task_list(
+    tasks: &[crate::background::manager::BackgroundTask],
+    _active_only: bool,
+) -> String {
     if tasks.is_empty() {
         return "No background tasks.".into();
     }
@@ -84,7 +105,13 @@ fn _format_task_list(tasks: &[crate::background::manager::BackgroundTask], _acti
     for t in tasks {
         let running = futures::executor::block_on(t.is_running());
         let exit_code = *futures::executor::block_on(t.exit_code.lock());
-        let status = if running { "running".into() } else if let Some(c) = exit_code { format!("exited {c}") } else { "unknown".into() };
+        let status = if running {
+            "running".into()
+        } else if let Some(c) = exit_code {
+            format!("exited {c}")
+        } else {
+            "unknown".into()
+        };
         lines.push(format!("  {} [{}] {}", t.id, status, t.command));
     }
     lines.join("\n")
@@ -122,8 +149,14 @@ impl crate::soul::toolset::Tool for TaskList {
         if let Some(err) = _ensure_root(runtime) {
             return err;
         }
-        let active_only = arguments.get("active_only").and_then(|v| v.as_bool()).unwrap_or(true);
-        let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+        let active_only = arguments
+            .get("active_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let limit = arguments
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize;
         let mut tasks = runtime.background_tasks.list(active_only).await;
         tasks.truncate(limit);
         let output = _format_task_list(&tasks, active_only);
@@ -168,14 +201,23 @@ impl crate::soul::toolset::Tool for TaskOutput {
         if let Some(err) = _ensure_root(runtime) {
             return err;
         }
-        let task_id = arguments.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+        let task_id = arguments
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if task_id.is_empty() {
             return crate::soul::message::ToolReturnValue::Error {
                 error: "task_id is required".into(),
             };
         }
-        let block = arguments.get("block").and_then(|v| v.as_bool()).unwrap_or(false);
-        let timeout = arguments.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30) as u64;
+        let block = arguments
+            .get("block")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let timeout = arguments
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30) as u64;
 
         let mut task = match runtime.background_tasks.get_task(task_id).await {
             Some(t) => t,
@@ -206,9 +248,13 @@ impl crate::soul::toolset::Tool for TaskOutput {
         };
 
         let output_path = runtime.background_tasks.resolve_output_path(task_id);
+        let full_output_available = runtime.background_tasks.output_log_file_available(task_id);
         let output_size = task.output().await.len();
         let preview_offset = output_size.saturating_sub(TASK_OUTPUT_PREVIEW_BYTES) as u64;
-        let chunk = runtime.background_tasks.read_output(task_id, preview_offset, TASK_OUTPUT_PREVIEW_BYTES).await;
+        let chunk = runtime
+            .background_tasks
+            .read_output(task_id, preview_offset, TASK_OUTPUT_PREVIEW_BYTES)
+            .await;
         let output_truncated = preview_offset > 0;
         let output_preview_bytes = chunk.next_offset - chunk.offset;
 
@@ -223,7 +269,7 @@ impl crate::soul::toolset::Tool for TaskOutput {
             retrieval_status,
             &chunk.text.trim_end_matches('\n').to_string(),
             &output_path,
-            true, // full_output_available stub
+            full_output_available,
             output_size,
             output_preview_bytes as usize,
             output_truncated,
@@ -284,7 +330,10 @@ impl crate::soul::toolset::Tool for TaskStop {
             };
         }
 
-        let task_id = arguments.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+        let task_id = arguments
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if task_id.is_empty() {
             return crate::soul::message::ToolReturnValue::Error {
                 error: "task_id is required".into(),
@@ -301,12 +350,11 @@ impl crate::soul::toolset::Tool for TaskStop {
         };
 
         let desc = format!("Stop background task `{task_id}`");
-        let result = match runtime.approval.request(
-            "TaskStop",
-            "stop background task",
-            &desc,
-            None,
-        ).await {
+        let result = match runtime
+            .approval
+            .request("TaskStop", "stop background task", &desc, None)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 return crate::soul::message::ToolReturnValue::Error {
@@ -321,9 +369,21 @@ impl crate::soul::toolset::Tool for TaskStop {
             };
         }
 
-        let reason = arguments.get("reason").and_then(|v| v.as_str()).unwrap_or("Stopped by TaskStop").trim();
-        let reason = if reason.is_empty() { "Stopped by TaskStop" } else { reason };
-        let task = runtime.background_tasks.kill(task_id, reason).await.unwrap_or(view);
+        let reason = arguments
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Stopped by TaskStop")
+            .trim();
+        let reason = if reason.is_empty() {
+            "Stopped by TaskStop"
+        } else {
+            reason
+        };
+        let task = runtime
+            .background_tasks
+            .kill(task_id, reason)
+            .await
+            .unwrap_or(view);
         let running = task.is_running().await;
         let exit_code = *task.exit_code.lock().await;
 

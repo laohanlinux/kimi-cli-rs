@@ -98,7 +98,11 @@ pub fn load_session_state(session_dir: &Path) -> SessionState {
         match serde_json::from_str::<SessionState>(&text) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!("Corrupted state file, using defaults: {} (error: {})", path.display(), e);
+                tracing::warn!(
+                    "Corrupted state file, using defaults: {} (error: {})",
+                    path.display(),
+                    e
+                );
                 SessionState::default()
             }
         }

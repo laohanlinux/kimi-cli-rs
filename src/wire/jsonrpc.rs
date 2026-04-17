@@ -1,5 +1,3 @@
-
-
 /// JSON-RPC request envelope.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct JsonRpcRequest<T = serde_json::Value> {
@@ -73,7 +71,10 @@ impl JsonRpcError {
 }
 
 /// Builds a successful JSON-RPC response.
-pub fn success_response(id: Option<serde_json::Value>, result: serde_json::Value) -> JsonRpcResponse {
+pub fn success_response(
+    id: Option<serde_json::Value>,
+    result: serde_json::Value,
+) -> JsonRpcResponse {
     JsonRpcResponse {
         jsonrpc: "2.0".into(),
         id,

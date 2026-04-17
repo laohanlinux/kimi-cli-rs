@@ -16,12 +16,14 @@ IMPORTANT:
 fn build_btw_context(
     soul: &crate::soul::kimisoul::KimiSoul,
     question: &str,
-) -> (String, Vec<crate::soul::message::Message>, crate::soul::toolset::KimiToolset) {
+) -> (
+    String,
+    Vec<crate::soul::message::Message>,
+    crate::soul::toolset::KimiToolset,
+) {
     let system_prompt = soul.agent().system_prompt.clone();
-    let effective_history = crate::soul::dynamic_injection::normalize_history(
-        soul.context().history(),
-        |_msg| false,
-    );
+    let effective_history =
+        crate::soul::dynamic_injection::normalize_history(soul.context().history(), |_msg| false);
 
     let reminder = crate::soul::message::Message {
         role: "system".into(),
@@ -31,11 +33,7 @@ fn build_btw_context(
         tool_calls: None,
         tool_call_id: None,
     };
-    let wrapped = format!(
-        "{}\n\n{}",
-        reminder.extract_text(""),
-        question
-    );
+    let wrapped = format!("{}\n\n{}", reminder.extract_text(""), question);
     let side_message = crate::soul::message::Message {
         role: "user".into(),
         content: vec![crate::soul::message::ContentPart::Text { text: wrapped }],
@@ -63,7 +61,10 @@ pub async fn execute_side_question(
     let (system_prompt, mut history, toolset) = build_btw_context(soul, question);
 
     for _turn in 0..BTW_MAX_TURNS {
-        match llm.chat(Some(&system_prompt), &history, Some(&toolset)).await {
+        match llm
+            .chat(Some(&system_prompt), &history, Some(&toolset))
+            .await
+        {
             Ok(result) => {
                 let response_text = result.extract_text("").trim().to_string();
 
@@ -114,7 +115,9 @@ pub async fn execute_side_question(
     (None, Some("No response received.".into()))
 }
 
-fn tool_result_to_message(tool_result: &crate::soul::message::ToolResult) -> crate::soul::message::Message {
+fn tool_result_to_message(
+    tool_result: &crate::soul::message::ToolResult,
+) -> crate::soul::message::Message {
     let content = tool_result.return_value.extract_text();
     crate::soul::message::Message {
         role: "tool".into(),
@@ -125,16 +128,14 @@ fn tool_result_to_message(tool_result: &crate::soul::message::ToolResult) -> cra
 }
 
 /// Executes a side question via wire events.
-pub async fn run_side_question(
-    soul: &mut crate::soul::kimisoul::KimiSoul,
-    question: &str,
-) {
+pub async fn run_side_question(soul: &mut crate::soul::kimisoul::KimiSoul, question: &str) {
     if soul.runtime.llm.is_none() {
         tracing::warn!("LLM is not set, cannot run side question");
         return;
     }
 
-    let btw_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..12.min(uuid::Uuid::new_v4().to_string().len())]
+    let btw_id = uuid::Uuid::new_v4().to_string().replace("-", "")
+        [..12.min(uuid::Uuid::new_v4().to_string().len())]
         .to_string();
     // Publish BtwBegin.
     if let Some(ref hub) = soul.runtime.root_wire_hub {

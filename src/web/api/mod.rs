@@ -1,9 +1,9 @@
 use axum::{
+    Router,
     extract::{Multipart, Path, Query, State, WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,7 +47,9 @@ pub fn router() -> Router<WebAppState> {
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route(
             "/api/sessions/:id",
-            get(get_session).patch(update_session).delete(delete_session),
+            get(get_session)
+                .patch(update_session)
+                .delete(delete_session),
         )
         .route("/api/sessions/:id/fork", post(fork_session))
         .route("/api/sessions/:id/generate-title", post(generate_title))
@@ -238,10 +240,12 @@ async fn update_session(
     if let Some(archived) = req.archived {
         st.archived = archived;
         if archived {
-            st.archived_at = Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64());
+            st.archived_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64(),
+            );
             st.auto_archive_exempt = false;
         } else {
             st.archived_at = None;
@@ -352,10 +356,12 @@ async fn generate_title_with_llm(req: &GenerateTitleRequest) -> crate::error::Re
     let config = crate::config::load_config(None)?;
 
     let (model, provider) = if !config.default_model.is_empty() {
-        config
-            .models
-            .get(&config.default_model)
-            .and_then(|m| config.providers.get(&m.provider).map(|p| (m.clone(), p.clone())))
+        config.models.get(&config.default_model).and_then(|m| {
+            config
+                .providers
+                .get(&m.provider)
+                .map(|p| (m.clone(), p.clone()))
+        })
     } else {
         None
     }
@@ -380,7 +386,10 @@ async fn generate_title_with_llm(req: &GenerateTitleRequest) -> crate::error::Re
 
     let oauth = crate::auth::oauth::OAuthManager::default();
     let mut provider = provider;
-    if let Some(resolved_key) = oauth.resolve_api_key(&provider.api_key, provider.oauth.as_ref()).await {
+    if let Some(resolved_key) = oauth
+        .resolve_api_key(&provider.api_key, provider.oauth.as_ref())
+        .await
+    {
         provider.api_key = resolved_key;
     }
 
@@ -406,16 +415,12 @@ async fn generate_title_with_llm(req: &GenerateTitleRequest) -> crate::error::Re
 
     let system_msg = crate::soul::message::Message {
         role: "system".into(),
-        content: vec![crate::soul::message::ContentPart::Text {
-            text: prompt,
-        }],
+        content: vec![crate::soul::message::ContentPart::Text { text: prompt }],
         tool_calls: None,
         tool_call_id: None,
     };
 
-    let reply = llm
-        .chat(None, &[system_msg], None)
-        .await?;
+    let reply = llm.chat(None, &[system_msg], None).await?;
 
     let raw = reply.extract_text("").trim().to_string();
     let cleaned = raw
@@ -456,7 +461,7 @@ async fn git_diff(
         }));
     }
 
-    let result = tokio::process::Command::new("git")
+    let result = crate::utils::subprocess_env::git_tokio_command()
         .args(["diff", "--numstat", "HEAD"])
         .current_dir(&work_dir)
         .output()
@@ -516,7 +521,7 @@ async fn git_diff(
     }
 
     // Also list untracked files
-    let untracked = tokio::process::Command::new("git")
+    let untracked = crate::utils::subprocess_env::git_tokio_command()
         .args(["ls-files", "--others", "--exclude-standard"])
         .current_dir(&work_dir)
         .output()
@@ -560,7 +565,11 @@ async fn upload_file(
     std::fs::create_dir_all(&uploads_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut saved = Vec::new();
-    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?
+    {
         let filename = field.file_name().unwrap_or("upload").to_string();
         let path = uploads_dir.join(&filename);
         let data = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -601,29 +610,16 @@ async fn get_session_file(
     }
 
     if canonical.is_dir() {
-        let mut entries = Vec::new();
-        let mut dir = tokio::fs::read_dir(&canonical).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let meta = entry.metadata().await.ok();
-            let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            if is_dir {
-                entries.push(json!({"name": name, "type": "directory"}));
-            } else {
-                entries.push(json!({"name": name, "type": "file", "size": size}));
-            }
-        }
-        entries.sort_by(|a, b| {
-            let a_type = a.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let b_type = b.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let a_name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let b_name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            (a_type, a_name).cmp(&(b_type, b_name))
-        });
+        let entries: Vec<serde_json::Value> =
+            crate::utils::file_filter::list_directory_filtered(&canonical)
+                .into_iter()
+                .filter_map(|e| serde_json::to_value(&e).ok())
+                .collect();
         Ok((StatusCode::OK, Json(json!({"entries": entries}))).into_response())
     } else {
-        let content = tokio::fs::read(&canonical).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let content = tokio::fs::read(&canonical)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         Ok((
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -650,7 +646,9 @@ async fn get_upload_file(
     if !canonical.is_file() {
         return Err(StatusCode::NOT_FOUND);
     }
-    let content = tokio::fs::read(&canonical).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let content = tokio::fs::read(&canonical)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok((
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -659,7 +657,7 @@ async fn get_upload_file(
         .into_response())
 }
 
-/// WebSocket stream for a session (stub).
+/// WebSocket stream for a session (wire events to client; text input to worker).
 #[tracing::instrument(level = "debug", skip(ws))]
 async fn session_stream(
     ws: WebSocketUpgrade,
@@ -669,11 +667,7 @@ async fn session_stream(
     ws.on_upgrade(move |socket| handle_socket(socket, id, state))
 }
 
-async fn handle_socket(
-    mut socket: axum::extract::ws::WebSocket,
-    id: String,
-    state: WebAppState,
-) {
+async fn handle_socket(mut socket: axum::extract::ws::WebSocket, id: String, state: WebAppState) {
     use axum::extract::ws::Message;
 
     let session = {

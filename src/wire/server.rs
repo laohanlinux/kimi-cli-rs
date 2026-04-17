@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, Mutex};
-
-
+use tokio::sync::{Mutex, mpsc};
 
 /// Bridges the internal Wire to a JSON-RPC over stdio client.
 pub struct WireServer {
@@ -11,7 +9,8 @@ pub struct WireServer {
     runtime: crate::soul::agent::Runtime,
     cancel_tx: Arc<Mutex<tokio::sync::watch::Sender<bool>>>,
     writer_tx: mpsc::UnboundedSender<serde_json::Value>,
-    pending_requests: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<crate::wire::types::WireMessage>>>>,
+    pending_requests:
+        Arc<Mutex<HashMap<String, mpsc::UnboundedSender<crate::wire::types::WireMessage>>>>,
 }
 
 impl WireServer {
@@ -47,7 +46,11 @@ impl WireServer {
                         continue;
                     }
                 };
-                if stdout.write_all(format!("{}\n", line).as_bytes()).await.is_err() {
+                if stdout
+                    .write_all(format!("{}\n", line).as_bytes())
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 if stdout.flush().await.is_err() {
@@ -127,7 +130,9 @@ impl WireServer {
         Ok(())
     }
 
-    fn handle_initialize(req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    fn handle_initialize(
+        req: &crate::wire::jsonrpc::JsonRpcRequest,
+    ) -> crate::error::Result<serde_json::Value> {
         Ok(serde_json::json!({
             "jsonrpc": "2.0",
             "id": req.id,
@@ -139,13 +144,18 @@ impl WireServer {
         }))
     }
 
-    async fn handle_prompt(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_prompt(
+        &self,
+        req: &crate::wire::jsonrpc::JsonRpcRequest,
+    ) -> crate::error::Result<serde_json::Value> {
         let text = req
             .params
             .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let input = vec![crate::soul::message::ContentPart::Text { text: text.to_string() }];
+        let input = vec![crate::soul::message::ContentPart::Text {
+            text: text.to_string(),
+        }];
 
         let soul = self.soul.clone();
         let runtime = self.runtime.clone();
@@ -160,17 +170,13 @@ impl WireServer {
             let wire_clone = wire.clone();
 
             let writer_tx_ui = writer_tx.clone();
-            let ui_loop = move |wire: crate::wire::Wire| -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            let ui_loop = move |wire: crate::wire::Wire| -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = ()> + Send>,
+            > {
                 Box::pin(async move {
                     let mut ui_side = wire.ui_side();
                     while let Some(msg) = ui_side.recv().await {
-                        Self::forward_wire_message(
-                            msg,
-                            &writer_tx_ui,
-                            &pending,
-                            &wire_clone,
-                        )
-                        .await;
+                        Self::forward_wire_message(msg, &writer_tx_ui, &pending, &wire_clone).await;
                     }
                 })
             };
@@ -179,7 +185,9 @@ impl WireServer {
                 crate::soul::run_soul(&mut *soul, input, ui_loop, cancel_rx, &runtime).await;
 
             let summary = match result {
-                Ok(outcome) => serde_json::json!({ "stop_reason": format!("{:?}", outcome.stop_reason) }),
+                Ok(outcome) => {
+                    serde_json::json!({ "stop_reason": format!("{:?}", outcome.stop_reason) })
+                }
                 Err(e) => serde_json::json!({ "error": e.to_string() }),
             };
             let _ = writer_tx.send(serde_json::json!({
@@ -192,7 +200,10 @@ impl WireServer {
         Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "accepted": true } }))
     }
 
-    async fn handle_steer(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_steer(
+        &self,
+        req: &crate::wire::jsonrpc::JsonRpcRequest,
+    ) -> crate::error::Result<serde_json::Value> {
         let text = req
             .params
             .get("text")
@@ -202,12 +213,18 @@ impl WireServer {
         Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "accepted": true } }))
     }
 
-    async fn handle_cancel(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_cancel(
+        &self,
+        req: &crate::wire::jsonrpc::JsonRpcRequest,
+    ) -> crate::error::Result<serde_json::Value> {
         self.cancel_tx.lock().await.send(true).ok();
         Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "cancelled": true } }))
     }
 
-    async fn handle_replay(&self, req: &crate::wire::jsonrpc::JsonRpcRequest) -> crate::error::Result<serde_json::Value> {
+    async fn handle_replay(
+        &self,
+        req: &crate::wire::jsonrpc::JsonRpcRequest,
+    ) -> crate::error::Result<serde_json::Value> {
         let session = &self.runtime.session;
         let records = session.wire_file.records();
         let limit = req
@@ -240,7 +257,11 @@ impl WireServer {
         &self,
         req: &crate::wire::jsonrpc::JsonRpcRequest,
     ) -> crate::error::Result<serde_json::Value> {
-        let enabled = req.params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let enabled = req
+            .params
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         {
             let mut soul = self.soul.lock().await;
             soul.plan_mode = enabled;
@@ -256,7 +277,9 @@ impl WireServer {
         }
         let _ = crate::session_state::save_session_state(&state, &session_dir);
 
-        Ok(serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "plan_mode": enabled } }))
+        Ok(
+            serde_json::json!({ "jsonrpc": "2.0", "id": req.id, "result": { "plan_mode": enabled } }),
+        )
     }
 
     async fn forward_wire_message(
@@ -400,7 +423,12 @@ mod tests {
         let resp = WireServer::handle_initialize(&req).unwrap();
         assert_eq!(resp["jsonrpc"], "2.0");
         assert_eq!(resp["id"], 1);
-        assert!(resp["result"]["serverInfo"]["name"].as_str().unwrap().contains("kimi"));
+        assert!(
+            resp["result"]["serverInfo"]["name"]
+                .as_str()
+                .unwrap()
+                .contains("kimi")
+        );
     }
 
     #[tokio::test]
@@ -418,7 +446,11 @@ mod tests {
 
         let msg = rx.recv().await.unwrap();
         match msg {
-            crate::wire::types::WireMessage::ApprovalResponse { request_id, response, .. } => {
+            crate::wire::types::WireMessage::ApprovalResponse {
+                request_id,
+                response,
+                ..
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(response, "approve");
             }

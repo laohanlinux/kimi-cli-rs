@@ -56,7 +56,7 @@ async fn collect_git_context(work_dir: &Path) -> Option<String> {
         return None;
     }
 
-    let output = tokio::process::Command::new("git")
+    let output = crate::utils::subprocess_env::git_tokio_command()
         .args(["status", "--short"])
         .current_dir(work_dir)
         .output()

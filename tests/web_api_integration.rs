@@ -57,11 +57,7 @@ async fn session_crud_roundtrip() {
     let id = created["id"].as_str().unwrap().to_string();
 
     // get
-    let get_resp = client
-        .get(&format!("{base}/{id}"))
-        .send()
-        .await
-        .unwrap();
+    let get_resp = client.get(&format!("{base}/{id}")).send().await.unwrap();
     assert_eq!(get_resp.status(), 200);
     let got: serde_json::Value = get_resp.json().await.unwrap();
     assert_eq!(got["id"], id);
@@ -85,20 +81,12 @@ async fn session_crud_roundtrip() {
     assert_eq!(patched["title"], "Updated Title");
 
     // delete
-    let del_resp = client
-        .delete(&format!("{base}/{id}"))
-        .send()
-        .await
-        .unwrap();
+    let del_resp = client.delete(&format!("{base}/{id}")).send().await.unwrap();
     assert_eq!(del_resp.status(), 204);
 
     // get after delete should 404 (from store only; session dir may still exist on disk,
     // but store removed it)
-    let get_resp2 = client
-        .get(&format!("{base}/{id}"))
-        .send()
-        .await
-        .unwrap();
+    let get_resp2 = client.get(&format!("{base}/{id}")).send().await.unwrap();
     assert_eq!(get_resp2.status(), 404);
 }
 
@@ -121,7 +109,9 @@ async fn git_diff_for_non_git_repo() {
     let id = created["id"].as_str().unwrap();
 
     let diff_resp = client
-        .get(&format!("http://127.0.0.1:{port}/api/sessions/{id}/git-diff"))
+        .get(&format!(
+            "http://127.0.0.1:{port}/api/sessions/{id}/git-diff"
+        ))
         .send()
         .await
         .unwrap();

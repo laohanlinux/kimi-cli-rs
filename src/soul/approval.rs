@@ -18,8 +18,7 @@ impl ApprovalResult {
 
     pub fn rejection_error(&self) -> crate::error::ToolRejectedError {
         if !self.feedback.is_empty() {
-            return crate::error::ToolRejectedError::default()
-                .with_feedback(self.feedback.clone());
+            return crate::error::ToolRejectedError::default().with_feedback(self.feedback.clone());
         }
         crate::error::ToolRejectedError::default()
     }
@@ -145,10 +144,11 @@ impl Approval {
         description: &str,
         display: Option<Vec<serde_json::Value>>,
     ) -> crate::error::Result<ApprovalResult> {
-        let tool_call = crate::soul::toolset::get_current_tool_call_or_none()
-            .ok_or_else(|| crate::error::KimiCliError::Generic(
-                "Approval must be requested from a tool call.".into()
-            ))?;
+        let tool_call = crate::soul::toolset::get_current_tool_call_or_none().ok_or_else(|| {
+            crate::error::KimiCliError::Generic(
+                "Approval must be requested from a tool call.".into(),
+            )
+        })?;
 
         tracing::debug!(
             tool_name = %tool_call.name,
@@ -197,7 +197,9 @@ impl Approval {
                 "reject" => Ok(ApprovalResult::new(false, feedback)),
                 _ => Ok(ApprovalResult::new(false, "")),
             },
-            Err(crate::error::KimiCliError::ApprovalCancelled) => Ok(ApprovalResult::new(false, "")),
+            Err(crate::error::KimiCliError::ApprovalCancelled) => {
+                Ok(ApprovalResult::new(false, ""))
+            }
             Err(e) => Err(e),
         }
     }

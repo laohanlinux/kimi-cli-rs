@@ -5,7 +5,6 @@ use axum::{
 };
 use serde_json::json;
 
-
 /// Lists all known sessions across work directories.
 #[tracing::instrument(level = "debug")]
 pub async fn list_sessions() -> Json<serde_json::Value> {

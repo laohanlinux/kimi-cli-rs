@@ -44,7 +44,10 @@ pub fn parse_mermaid_flowchart(text: &str) -> Result<Flow, FlowError> {
                 dst: dst_node.id,
                 label,
             };
-            outgoing.entry(edge.src.clone()).or_default().push(edge.clone());
+            outgoing
+                .entry(edge.src.clone())
+                .or_default()
+                .push(edge.clone());
             outgoing.entry(edge.dst.clone()).or_default();
             continue;
         }
@@ -54,10 +57,8 @@ pub fn parse_mermaid_flowchart(text: &str) -> Result<Flow, FlowError> {
         }
     }
 
-    let mut flow_nodes: HashMap<String, FlowNode> = nodes
-        .into_iter()
-        .map(|(k, v)| (k, v.node))
-        .collect();
+    let mut flow_nodes: HashMap<String, FlowNode> =
+        nodes.into_iter().map(|(k, v)| (k, v.node)).collect();
 
     for node_id in flow_nodes.keys() {
         outgoing.entry(node_id.clone()).or_default();
@@ -136,32 +137,51 @@ fn try_parse_edge_line(line: &str, line_no: usize) -> Option<(NodeSpec, Option<S
     Some((src_spec, label, dst_spec))
 }
 
-fn parse_node_token(line: &str, idx: usize, line_no: usize) -> Result<(NodeSpec, usize), FlowError> {
+fn parse_node_token(
+    line: &str,
+    idx: usize,
+    line_no: usize,
+) -> Result<(NodeSpec, usize), FlowError> {
     let re = regex::Regex::new(r"^[A-Za-z0-9_][A-Za-z0-9_-]*").unwrap();
     let rest = &line[idx..];
-    let m = re.find(rest).ok_or_else(|| {
-        FlowError::new(line_error(line_no, "Expected node id"))
-    })?;
+    let m = re
+        .find(rest)
+        .ok_or_else(|| FlowError::new(line_error(line_no, "Expected node id")))?;
     let node_id = m.as_str().to_string();
     let mut idx = idx + m.end();
 
     let shapes: std::collections::HashMap<char, char> =
-        [('[', ']'), ('(', ')'), ('{', '}')]
-            .into_iter()
-            .collect();
+        [('[', ']'), ('(', ')'), ('{', '}')].into_iter().collect();
 
     if idx >= line.len() || !shapes.keys().any(|&v| line.chars().nth(idx) == Some(v)) {
-        return Ok((NodeSpec { node_id, label: None }, idx));
+        return Ok((
+            NodeSpec {
+                node_id,
+                label: None,
+            },
+            idx,
+        ));
     }
 
     let open_char = line.chars().nth(idx).unwrap();
     let close_char = *shapes.get(&open_char).unwrap();
     idx += 1;
     let (label, new_idx) = parse_label(line, idx, close_char, line_no)?;
-    Ok((NodeSpec { node_id, label: Some(label) }, new_idx))
+    Ok((
+        NodeSpec {
+            node_id,
+            label: Some(label),
+        },
+        new_idx,
+    ))
 }
 
-fn parse_label(line: &str, idx: usize, close_char: char, line_no: usize) -> Result<(String, usize), FlowError> {
+fn parse_label(
+    line: &str,
+    idx: usize,
+    close_char: char,
+    line_no: usize,
+) -> Result<(String, usize), FlowError> {
     if idx >= line.len() {
         return Err(FlowError::new(line_error(line_no, "Expected node label")));
     }
@@ -199,12 +219,15 @@ fn parse_label(line: &str, idx: usize, close_char: char, line_no: usize) -> Resu
         return Err(FlowError::new(line_error(line_no, "Unclosed quoted label")));
     }
 
-    let end = line[idx..].find(close_char).ok_or_else(|| {
-        FlowError::new(line_error(line_no, "Unclosed node label"))
-    })?;
+    let end = line[idx..]
+        .find(close_char)
+        .ok_or_else(|| FlowError::new(line_error(line_no, "Unclosed node label")))?;
     let label = line[idx..idx + end].trim().to_string();
     if label.is_empty() {
-        return Err(FlowError::new(line_error(line_no, "Node label cannot be empty")));
+        return Err(FlowError::new(line_error(
+            line_no,
+            "Node label cannot be empty",
+        )));
     }
     Ok((label, idx + end + 1))
 }
@@ -217,11 +240,18 @@ fn skip_ws(line: &str, idx: usize) -> usize {
     idx
 }
 
-fn add_node(nodes: &mut HashMap<String, NodeDef>, spec: &NodeSpec, line_no: usize) -> Result<FlowNode, FlowError> {
+fn add_node(
+    nodes: &mut HashMap<String, NodeDef>,
+    spec: &NodeSpec,
+    line_no: usize,
+) -> Result<FlowNode, FlowError> {
     let label = spec.label.clone().unwrap_or_else(|| spec.node_id.clone());
     let label_norm = label.trim().to_lowercase();
     if label_norm.is_empty() {
-        return Err(FlowError::new(line_error(line_no, "Node label cannot be empty")));
+        return Err(FlowError::new(line_error(
+            line_no,
+            "Node label cannot be empty",
+        )));
     }
 
     let kind = if label_norm == "begin" {
@@ -247,7 +277,13 @@ fn add_node(nodes: &mut HashMap<String, NodeDef>, spec: &NodeSpec, line_no: usiz
             return Ok(existing.node.clone());
         }
         if explicit && !existing.explicit {
-            nodes.insert(spec.node_id.clone(), NodeDef { node: node.clone(), explicit: true });
+            nodes.insert(
+                spec.node_id.clone(),
+                NodeDef {
+                    node: node.clone(),
+                    explicit: true,
+                },
+            );
             return Ok(node);
         }
         return Err(FlowError::new(line_error(
@@ -256,7 +292,13 @@ fn add_node(nodes: &mut HashMap<String, NodeDef>, spec: &NodeSpec, line_no: usiz
         )));
     }
 
-    nodes.insert(spec.node_id.clone(), NodeDef { node: node.clone(), explicit });
+    nodes.insert(
+        spec.node_id.clone(),
+        NodeDef {
+            node: node.clone(),
+            explicit,
+        },
+    );
     Ok(node)
 }
 
@@ -288,9 +330,7 @@ fn normalize_edge_line(line: &str) -> (String, Option<String>) {
             if label.as_ref().unwrap().is_empty() {
                 label = None;
             }
-            normalized = normalized[..m.start()].to_string()
-                + "-->"
-                + &normalized[m.end()..];
+            normalized = normalized[..m.start()].to_string() + "-->" + &normalized[m.end()..];
         }
     }
 
@@ -304,7 +344,9 @@ fn infer_decision_nodes(
     let mut updated = HashMap::new();
     for (node_id, node) in nodes {
         let mut kind = node.kind.clone();
-        if matches!(kind, FlowNodeKind::Task) && outgoing.get(&node_id).map(|v| v.len()).unwrap_or(0) > 1 {
+        if matches!(kind, FlowNodeKind::Task)
+            && outgoing.get(&node_id).map(|v| v.len()).unwrap_or(0) > 1
+        {
             kind = FlowNodeKind::Decision;
         }
         if kind != node.kind {

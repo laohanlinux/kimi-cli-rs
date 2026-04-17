@@ -28,7 +28,11 @@ pub fn normalize_history(
     let mut result: Vec<crate::soul::message::Message> = Vec::new();
     for msg in history {
         if let Some(last) = result.last_mut() {
-            if last.role == msg.role && msg.role == "user" && !is_notification(last) && !is_notification(msg) {
+            if last.role == msg.role
+                && msg.role == "user"
+                && !is_notification(last)
+                && !is_notification(msg)
+            {
                 last.content.extend(msg.content.clone());
                 continue;
             }

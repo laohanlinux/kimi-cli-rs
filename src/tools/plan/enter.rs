@@ -49,7 +49,9 @@ impl crate::soul::toolset::Tool for EnterPlanMode {
                     .join("plans")
                     .join(format!("{id}.md"))
             });
-            let plan_path_str = plan_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let plan_path_str = plan_path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
             return crate::soul::message::ToolReturnValue::Ok {
                 output: format!(
                     "Plan mode activated (auto-approved in non-interactive mode).\n\
@@ -107,18 +109,22 @@ impl crate::soul::toolset::Tool for EnterPlanMode {
         let mut rx = hub.subscribe();
         hub.publish(request);
 
-        let answers = match crate::tools::ask_user::wait_for_question_response(&mut rx, &request_id, 300.0).await {
-            Ok(a) => a,
-            Err(e) => {
-                return crate::soul::message::ToolReturnValue::Error {
-                    error: format!("Failed to get user response: {e}"),
-                };
-            }
-        };
+        let answers =
+            match crate::tools::ask_user::wait_for_question_response(&mut rx, &request_id, 300.0)
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    return crate::soul::message::ToolReturnValue::Error {
+                        error: format!("Failed to get user response: {e}"),
+                    };
+                }
+            };
 
         if answers.is_empty() {
             return crate::soul::message::ToolReturnValue::Ok {
-                output: "User dismissed without choosing. Proceed with implementation directly.".into(),
+                output: "User dismissed without choosing. Proceed with implementation directly."
+                    .into(),
                 message: Some("Dismissed".into()),
             };
         }
@@ -137,7 +143,9 @@ impl crate::soul::toolset::Tool for EnterPlanMode {
                     .join("plans")
                     .join(format!("{id}.md"))
             });
-            let plan_path_str = plan_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let plan_path_str = plan_path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
             return crate::soul::message::ToolReturnValue::Ok {
                 output: format!(
                     "Plan mode activated. You MUST NOT edit code files — only read and plan.\n\
@@ -156,11 +164,9 @@ impl crate::soul::toolset::Tool for EnterPlanMode {
             };
         } else {
             return crate::soul::message::ToolReturnValue::Ok {
-                output: (
-                    "User declined to enter plan mode. Please check with user whether \
-                     to proceed with implementation directly."
-                )
-                .into(),
+                output: ("User declined to enter plan mode. Please check with user whether \
+                     to proceed with implementation directly.")
+                    .into(),
                 message: Some("Declined".into()),
             };
         }

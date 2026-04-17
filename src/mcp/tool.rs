@@ -23,7 +23,10 @@ impl McpTool {
         let schema = serde_json::Value::Object(mcp_tool.input_schema.as_ref().clone());
         let description = format!(
             "This is an MCP (Model Context Protocol) tool from MCP server `{server_name}`.\n\n{}",
-            mcp_tool.description.as_deref().unwrap_or("No description provided.")
+            mcp_tool
+                .description
+                .as_deref()
+                .unwrap_or("No description provided.")
         );
         Self {
             server_name,

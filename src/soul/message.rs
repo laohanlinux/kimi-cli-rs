@@ -52,11 +52,16 @@ pub fn tool_result_to_message(tool_result: &ToolResult) -> Message {
                 content.push(system(msg.clone()));
             }
             if !output.is_empty() {
-                content.push(ContentPart::Text { text: output.clone() });
+                content.push(ContentPart::Text {
+                    text: output.clone(),
+                });
             }
             if content.is_empty() {
                 content.push(system("Tool output is empty."));
-            } else if !content.iter().any(|p| matches!(p, ContentPart::Text { .. })) {
+            } else if !content
+                .iter()
+                .any(|p| matches!(p, ContentPart::Text { .. }))
+            {
                 content.insert(0, system("Tool returned non-text content."));
             }
         }
@@ -64,7 +69,10 @@ pub fn tool_result_to_message(tool_result: &ToolResult) -> Message {
             content.extend(parts.iter().cloned());
             if content.is_empty() {
                 content.push(system("Tool output is empty."));
-            } else if !content.iter().any(|p| matches!(p, ContentPart::Text { .. })) {
+            } else if !content
+                .iter()
+                .any(|p| matches!(p, ContentPart::Text { .. }))
+            {
                 content.insert(0, system("Tool returned non-text content."));
             }
         }
@@ -79,7 +87,10 @@ pub fn tool_result_to_message(tool_result: &ToolResult) -> Message {
 }
 
 /// Validates message content against model capabilities, returning missing ones.
-pub fn check_message(message: &Message, model_capabilities: &HashSet<crate::config::ModelCapability>) -> HashSet<crate::config::ModelCapability> {
+pub fn check_message(
+    message: &Message,
+    model_capabilities: &HashSet<crate::config::ModelCapability>,
+) -> HashSet<crate::config::ModelCapability> {
     let mut needed = HashSet::new();
     for part in &message.content {
         match part {
@@ -143,10 +154,17 @@ pub struct ToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ToolReturnValue {
-    Ok { output: String, message: Option<String> },
-    Error { error: String },
+    Ok {
+        output: String,
+        message: Option<String>,
+    },
+    Error {
+        error: String,
+    },
     /// Rich multi-part result (used by MCP tools).
-    Parts { parts: Vec<ContentPart> },
+    Parts {
+        parts: Vec<ContentPart>,
+    },
 }
 
 impl ToolReturnValue {
@@ -155,19 +173,17 @@ impl ToolReturnValue {
         match self {
             ToolReturnValue::Ok { output, .. } => output.clone(),
             ToolReturnValue::Error { error } => format!("Error: {error}"),
-            ToolReturnValue::Parts { parts } => {
-                parts
-                    .iter()
-                    .map(|p| match p {
-                        ContentPart::Text { text } => text.clone(),
-                        ContentPart::Think { thought } => thought.clone(),
-                        ContentPart::ImageUrl { url } => format!("[Image: {url}]"),
-                        ContentPart::AudioUrl { url } => format!("[Audio: {url}]"),
-                        ContentPart::VideoUrl { url } => format!("[Video: {url}]"),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
+            ToolReturnValue::Parts { parts } => parts
+                .iter()
+                .map(|p| match p {
+                    ContentPart::Text { text } => text.clone(),
+                    ContentPart::Think { thought } => thought.clone(),
+                    ContentPart::ImageUrl { url } => format!("[Image: {url}]"),
+                    ContentPart::AudioUrl { url } => format!("[Audio: {url}]"),
+                    ContentPart::VideoUrl { url } => format!("[Video: {url}]"),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 }

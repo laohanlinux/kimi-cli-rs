@@ -60,10 +60,8 @@ impl LaborMarket {
     }
 
     pub fn require_builtin_type(&self, name: &str) -> crate::error::Result<&AgentTypeDefinition> {
-        self.builtin_types
-            .get(name)
-            .ok_or_else(|| crate::error::KimiCliError::Config(
-                format!("Unknown subagent type: {name}").into()
-            ))
+        self.builtin_types.get(name).ok_or_else(|| {
+            crate::error::KimiCliError::Config(format!("Unknown subagent type: {name}").into())
+        })
     }
 }

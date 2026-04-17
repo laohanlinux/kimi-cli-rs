@@ -41,7 +41,11 @@ pub fn extract_key_argument(json_content: &str, tool_name: &str) -> Option<Strin
         "Shell" => args.get("command")?.as_str()?.to_string(),
         "TaskOutput" => args.get("task_id")?.as_str()?.to_string(),
         "TaskList" => {
-            if args.get("active_only").and_then(|v| v.as_bool()).unwrap_or(true) {
+            if args
+                .get("active_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+            {
                 "active".into()
             } else {
                 "all".into()
@@ -59,7 +63,7 @@ pub fn extract_key_argument(json_content: &str, tool_name: &str) -> Option<Strin
         _ => json_content.to_string(),
     };
 
-    Some(shorten_middle(&key, 50))
+    Some(crate::utils::string::shorten_middle(&key, 50))
 }
 
 fn normalize_path(path: &str) -> String {
@@ -72,14 +76,6 @@ fn normalize_path(path: &str) -> String {
     } else {
         path.to_string()
     }
-}
-
-fn shorten_middle(text: &str, width: usize) -> String {
-    if text.len() <= width {
-        return text.to_string();
-    }
-    let half = width / 2;
-    format!("{}...{}", &text[..half], &text[text.len() - half..])
 }
 
 #[cfg(test)]
@@ -127,21 +123,11 @@ mod tests {
     }
 
     #[test]
-    fn shorten_middle_short() {
-        assert_eq!(shorten_middle("hi", 10), "hi");
-    }
-
-    #[test]
-    fn shorten_middle_long() {
-        let s = "a".repeat(100);
-        let out = shorten_middle(&s, 10);
-        assert!(out.contains("..."));
-        assert_eq!(out.len(), 13); // 5 + 3 + 5
-    }
-
-    #[test]
     fn normalize_path_strips_cwd() {
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let path = format!("{}/src/main.rs", cwd);
         assert_eq!(normalize_path(&path), "src/main.rs");
     }

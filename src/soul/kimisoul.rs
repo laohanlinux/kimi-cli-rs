@@ -73,20 +73,30 @@ impl KimiSoul {
     }
 
     pub fn model_capabilities(&self) -> std::collections::HashSet<crate::config::ModelCapability> {
-        self.runtime.llm.as_ref()
+        self.runtime
+            .llm
+            .as_ref()
             .map(|l| l.capabilities.clone())
             .unwrap_or_default()
     }
 
     pub fn status(&self) -> crate::soul::StatusSnapshot {
-        let token_count = self.context.history().iter()
+        let token_count = self
+            .context
+            .history()
+            .iter()
             .flat_map(|m| m.content.iter())
             .filter_map(|p| match p {
                 crate::soul::message::ContentPart::Text { text } => Some(text.len().div_ceil(4)),
                 _ => None,
             })
             .sum();
-        let max_size = self.runtime.llm.as_ref().map(|l| l.max_context_size).unwrap_or(128_000);
+        let max_size = self
+            .runtime
+            .llm
+            .as_ref()
+            .map(|l| l.max_context_size)
+            .unwrap_or(128_000);
         let usage = if max_size > 0 {
             (token_count as f64 / max_size as f64).clamp(0.0, 1.0)
         } else {
@@ -132,7 +142,10 @@ impl KimiSoul {
         self.agent.toolset.set_hook_engine(engine);
     }
 
-    pub fn add_injection_provider(&mut self, provider: Box<dyn crate::soul::dynamic_injection::DynamicInjectionProvider>) {
+    pub fn add_injection_provider(
+        &mut self,
+        provider: Box<dyn crate::soul::dynamic_injection::DynamicInjectionProvider>,
+    ) {
         self.injection_providers.push(provider);
     }
 
@@ -229,8 +242,16 @@ impl KimiSoul {
         if ratio <= 0.0 {
             return false;
         }
-        let max_size = self.runtime.llm.as_ref().map(|l| l.max_context_size).unwrap_or(128_000);
-        let token_count = self.context.history().iter()
+        let max_size = self
+            .runtime
+            .llm
+            .as_ref()
+            .map(|l| l.max_context_size)
+            .unwrap_or(128_000);
+        let token_count = self
+            .context
+            .history()
+            .iter()
             .flat_map(|m| m.content.iter())
             .filter_map(|p| match p {
                 crate::soul::message::ContentPart::Text { text } => Some(text.len().div_ceil(4)),
@@ -245,7 +266,10 @@ impl KimiSoul {
     pub async fn compact_context(&mut self, custom_instruction: &str) {
         let compaction = crate::soul::compaction::SimpleCompaction::default();
         let history = self.context.history().to_vec();
-        match compaction.compact(&history, &crate::llm::Llm::default(), custom_instruction).await {
+        match compaction
+            .compact(&history, &crate::llm::Llm::default(), custom_instruction)
+            .await
+        {
             Ok(result) => {
                 tracing::info!(
                     "compacted {} messages into {}",
@@ -262,7 +286,8 @@ impl KimiSoul {
     /// Clears the conversation context and rewrites the system prompt.
     #[tracing::instrument(level = "info", skip(self))]
     pub async fn clear_context(&mut self) {
-        self.context = crate::soul::context::Context::new(self.runtime.session.context_file.clone());
+        self.context =
+            crate::soul::context::Context::new(self.runtime.session.context_file.clone());
         if let Err(e) = tokio::fs::remove_file(&self.runtime.session.context_file).await {
             tracing::debug!("no context file to remove: {}", e);
         }
@@ -335,18 +360,30 @@ impl KimiSoul {
         let _ = self.consume_pending_steers().await;
 
         // Ensure OAuth tokens are fresh before proceeding.
-        if let Some(ref provider) = self.runtime.config.providers.get(&self.runtime.config.default_model) {
+        if let Some(ref provider) = self
+            .runtime
+            .config
+            .providers
+            .get(&self.runtime.config.default_model)
+        {
             if provider.oauth.is_some() {
                 self.publish_wire(crate::wire::types::WireMessage::Notification {
                     text: "Refreshing sign-in token…".into(),
                 });
             }
-            let _ = self.runtime.oauth.ensure_fresh(provider.oauth.as_ref()).await;
+            let _ = self
+                .runtime
+                .oauth
+                .ensure_fresh(provider.oauth.as_ref())
+                .await;
         }
 
         // Trigger UserPromptSubmit hook.
         let engine = self.hook_engine.clone();
-        match engine.trigger("UserPromptSubmit", "", serde_json::json!({})).await {
+        match engine
+            .trigger("UserPromptSubmit", "", serde_json::json!({}))
+            .await
+        {
             Ok(crate::hooks::engine::HookAction::Block { reason }) => {
                 let reply = crate::soul::message::Message {
                     role: "assistant".into(),
@@ -376,16 +413,19 @@ impl KimiSoul {
 
         let mcp_started = self.start_background_mcp_loading().await;
 
-        let text = user_input.iter().filter_map(|p| match p {
-            crate::soul::message::ContentPart::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>().join("");
+        let text = user_input
+            .iter()
+            .filter_map(|p| match p {
+                crate::soul::message::ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
 
-        // Handle slash commands.
-        if let Some(cmd_text) = text.strip_prefix('/') {
-            let parts: Vec<&str> = cmd_text.splitn(2, ' ').collect();
-            let cmd_name = parts[0];
-            let cmd_args = parts.get(1).unwrap_or(&"");
+        // Handle slash commands (same head parsing as Python `parse_slash_command_call`).
+        if let Some(call) = crate::utils::slashcmd::parse_slash_command_call(&text) {
+            let cmd_name = call.name.as_str();
+            let cmd_args = call.args.as_str();
             if let Some(&idx) = self.slash_command_map.get(cmd_name) {
                 if let Some(cmd) = self.slash_commands.get(idx).cloned() {
                     (cmd.handler)(self, cmd_args).await;
@@ -421,12 +461,25 @@ impl KimiSoul {
         }
 
         // Retrieve the last assistant message as the final message, if any.
-        let final_message = self.context.history().iter().rev().find(|m| m.role == "assistant").cloned();
+        let final_message = self
+            .context
+            .history()
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .cloned();
 
         // Auto title generation on first turn.
         if self.runtime.session.state.title_generate_attempts == 0 {
             if let Some(ref msg) = final_message {
-                let title_text = msg.extract_text("").lines().next().unwrap_or("").chars().take(40).collect::<String>();
+                let title_text = msg
+                    .extract_text("")
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect::<String>();
                 let title_text = title_text.trim();
                 if !title_text.is_empty() {
                     self.runtime.session.title = title_text.into();
@@ -485,7 +538,10 @@ impl KimiSoul {
 
     /// Internal step loop.
     #[tracing::instrument(level = "debug", skip(self, cancel_rx))]
-    async fn agent_loop(&mut self, cancel_rx: Option<&watch::Receiver<bool>>) -> crate::error::Result<crate::soul::TurnStopReason> {
+    async fn agent_loop(
+        &mut self,
+        cancel_rx: Option<&watch::Receiver<bool>>,
+    ) -> crate::error::Result<crate::soul::TurnStopReason> {
         let max_steps = self.runtime.config.loop_control.max_steps_per_turn.max(1);
         for step_no in 0..max_steps {
             if Self::soul_cancelled(cancel_rx) {
@@ -502,10 +558,7 @@ impl KimiSoul {
                 Some(reason) => return Ok(reason),
                 None => {
                     if let Some(dmail) = self.runtime.denwa_renji.fetch_pending_dmail() {
-                        tracing::info!(
-                            checkpoint_id = dmail.checkpoint_id,
-                            "processing D-Mail"
-                        );
+                        tracing::info!(checkpoint_id = dmail.checkpoint_id, "processing D-Mail");
                         // Inject BackToTheFuture system message before reverting.
                         let btf_msg = crate::soul::message::Message {
                             role: "system".into(),
@@ -560,9 +613,7 @@ impl KimiSoul {
                         max_retries,
                         e
                     );
-                    self.publish_wire(crate::wire::types::WireMessage::Notification {
-                        text: note,
-                    });
+                    self.publish_wire(crate::wire::types::WireMessage::Notification { text: note });
                     last_err = Some(e);
                     if attempt < max_retries - 1 {
                         let delay = std::time::Duration::from_secs(2_u64.pow(attempt as u32));
@@ -571,7 +622,9 @@ impl KimiSoul {
                 }
             }
         }
-        Err(last_err.unwrap_or_else(|| crate::error::KimiCliError::Generic("LLM chat failed after retries".into())))
+        Err(last_err.unwrap_or_else(|| {
+            crate::error::KimiCliError::Generic("LLM chat failed after retries".into())
+        }))
     }
 
     /// Executes one LLM step.
@@ -592,7 +645,9 @@ impl KimiSoul {
         for injection in injections {
             let msg = crate::soul::message::Message {
                 role: "user".into(),
-                content: vec![crate::soul::message::ContentPart::Text { text: injection.content }],
+                content: vec![crate::soul::message::ContentPart::Text {
+                    text: injection.content,
+                }],
                 tool_calls: None,
                 tool_call_id: None,
             };
@@ -609,7 +664,9 @@ impl KimiSoul {
             let reply = crate::soul::message::Message {
                 role: "assistant".into(),
                 content: vec![crate::soul::message::ContentPart::Text {
-                    text: "LLM client is not yet implemented in this Rust port.".into(),
+                    text: "No LLM client is configured (missing API key, provider, or model). \
+Set credentials in ~/.kimi/config.toml or the environment, then restart."
+                        .into(),
                 }],
                 tool_calls: None,
                 tool_call_id: None,
@@ -631,7 +688,9 @@ impl KimiSoul {
             text: format!("Waiting for model `{model_label}` (network request)…"),
         });
 
-        let assistant_msg = self.chat_with_retry(llm, &system_prompt, &history, Some(tools)).await?;
+        let assistant_msg = self
+            .chat_with_retry(llm, &system_prompt, &history, Some(tools))
+            .await?;
 
         self.context.append_message(&assistant_msg).await?;
 
@@ -658,9 +717,12 @@ impl KimiSoul {
                                     tracing::info!(tool = %call.name, reason = %reason, "denied by approval runtime");
                                     let reject_result = crate::soul::message::ToolResult {
                                         tool_call_id: call.id.clone(),
-                                        return_value: crate::soul::message::ToolReturnValue::Error {
-                                            error: format!("Tool use was denied by approval runtime: {reason}"),
-                                        },
+                                        return_value:
+                                            crate::soul::message::ToolReturnValue::Error {
+                                                error: format!(
+                                                    "Tool use was denied by approval runtime: {reason}"
+                                                ),
+                                            },
                                     };
                                     tool_results.push(reject_result.clone());
                                     let result_msg = crate::soul::message::Message {
@@ -688,7 +750,10 @@ impl KimiSoul {
                             tool_call_id: call.id.clone(),
                             sender: self.agent.name.clone(),
                             action: call.name.clone(),
-                            description: format!("Call tool '{}' with args: {}", call.name, call.arguments),
+                            description: format!(
+                                "Call tool '{}' with args: {}",
+                                call.name, call.arguments
+                            ),
                             display: None,
                         });
                         // Wait for approval response via the wire pump (or cooperative cancel).
@@ -717,15 +782,22 @@ impl KimiSoul {
                                 }
                             }
                             None => {
-                                match tokio::time::timeout(timeout, self.approval_queue.recv()).await {
-                                    Ok(Some(crate::wire::types::WireMessage::ApprovalResponse {
-                                        response,
-                                        ..
-                                    })) => response.to_lowercase() == "approve",
+                                match tokio::time::timeout(timeout, self.approval_queue.recv())
+                                    .await
+                                {
+                                    Ok(Some(
+                                        crate::wire::types::WireMessage::ApprovalResponse {
+                                            response,
+                                            ..
+                                        },
+                                    )) => response.to_lowercase() == "approve",
                                     Ok(Some(_)) => false,
                                     Ok(None) => false,
                                     Err(_) => {
-                                        tracing::warn!("Approval request timed out for tool {}", call.name);
+                                        tracing::warn!(
+                                            "Approval request timed out for tool {}",
+                                            call.name
+                                        );
                                         false
                                     }
                                 }
@@ -758,7 +830,8 @@ impl KimiSoul {
                     self.context.append_message(&result_msg).await?;
 
                     // Sync plan mode if a tool (e.g., EnterPlanMode/ExitPlanMode) modified persisted state.
-                    let fresh_state = crate::session_state::load_session_state(&self.runtime.session.dir());
+                    let fresh_state =
+                        crate::session_state::load_session_state(&self.runtime.session.dir());
                     if fresh_state.plan_mode != self.plan_mode {
                         self.set_plan_mode_inner(fresh_state.plan_mode);
                     }
@@ -770,7 +843,9 @@ impl KimiSoul {
         Ok(Some(crate::soul::TurnStopReason::NoToolCalls))
     }
 
-    fn build_slash_commands(skills: &std::collections::HashMap<String, crate::skill::Skill>) -> Vec<std::sync::Arc<crate::soul::slash::SlashCommand>> {
+    fn build_slash_commands(
+        skills: &std::collections::HashMap<String, crate::skill::Skill>,
+    ) -> Vec<std::sync::Arc<crate::soul::slash::SlashCommand>> {
         let mut registry = crate::soul::slash::default_registry();
         for skill in skills.values() {
             let name = skill.name.clone();
@@ -794,7 +869,11 @@ impl KimiSoul {
     }
 
     async fn cmd_run_skill(soul: &mut KimiSoul, skill_name: &str, args: &str) {
-        let skill = match soul.runtime.skills.get(&crate::skill::normalize_skill_name(skill_name)) {
+        let skill = match soul
+            .runtime
+            .skills
+            .get(&crate::skill::normalize_skill_name(skill_name))
+        {
             Some(s) => s.clone(),
             None => {
                 tracing::warn!("Skill not found: {}", skill_name);
@@ -826,7 +905,9 @@ impl KimiSoul {
         }
     }
 
-    fn index_slash_commands(commands: &[std::sync::Arc<crate::soul::slash::SlashCommand>]) -> std::collections::HashMap<String, usize> {
+    fn index_slash_commands(
+        commands: &[std::sync::Arc<crate::soul::slash::SlashCommand>],
+    ) -> std::collections::HashMap<String, usize> {
         commands
             .iter()
             .enumerate()

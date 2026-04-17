@@ -109,7 +109,7 @@ pub enum Command {
         #[arg(long)]
         archived: bool,
     },
-    /// Export a session.
+    /// Export a session to Markdown (`share/exports/kimi-export-*.md`, same as `/export`).
     Export {
         /// Session ID to export.
         session_id: String,
@@ -213,16 +213,28 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
                 }
             };
             let export_dir = share_dir.join("exports");
-            std::fs::create_dir_all(&export_dir)?;
-            let export_path = export_dir.join(format!("{session_id}.jsonl"));
-            if session.context_file.exists() {
-                std::fs::copy(&session.context_file, &export_path)?;
-            }
-            println!(
-                "Exported session {} to {}",
+            tokio::fs::create_dir_all(&export_dir).await?;
+            let mut ctx = crate::soul::context::Context::new(session.context_file.clone());
+            ctx.restore().await?;
+            let work_dir_str = session.work_dir.display().to_string();
+            match crate::utils::export::perform_export(
+                ctx.history(),
                 session_id,
-                export_path.display()
-            );
+                &work_dir_str,
+                ctx.token_count(),
+                "",
+                &export_dir,
+            )
+            .await
+            {
+                Ok(path) => {
+                    println!("Exported session {} to {}", session_id, path.display());
+                }
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    std::process::exit(1);
+                }
+            }
             Ok(())
         }
         Some(Command::Import { target }) => {
@@ -234,6 +246,10 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
             let target_path = std::path::PathBuf::from(target);
             if !target_path.exists() {
                 eprintln!("Target file {} not found", target_path.display());
+                std::process::exit(1);
+            }
+            if let Err(msg) = crate::utils::export::validate_import_file(&target_path).await {
+                eprintln!("{msg}");
                 std::process::exit(1);
             }
             let content = tokio::fs::read_to_string(&target_path).await?;
@@ -303,12 +319,13 @@ pub async fn run(args: &Cli) -> crate::error::Result<()> {
             Ok(())
         }
         Some(Command::Login) => {
-            let status = std::process::Command::new("kimi")
+            let status = crate::utils::subprocess_env::kimi_std_command()
                 .arg("login")
                 .status()?;
             if !status.success() {
                 return Err(crate::error::KimiCliError::Generic(
-                    "Login failed. Make sure the Python `kimi` CLI is installed and in PATH.".into(),
+                    "Login failed. Make sure the Python `kimi` CLI is installed and in PATH."
+                        .into(),
                 ));
             }
             Ok(())

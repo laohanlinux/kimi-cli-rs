@@ -1,11 +1,12 @@
 #![recursion_limit = "512"]
 
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
+use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Main entrypoint for the Kimi CLI.
 #[tokio::main]
 #[tracing::instrument(level = "info", skip_all)]
 async fn main() -> Result<(), kimi_cli_rs::error::KimiCliError> {
+    kimi_cli_rs::utils::proxy::normalize_proxy_env();
     let args = kimi_cli_rs::cli::parse();
     init_logging(args.debug);
     if args.debug {
@@ -64,7 +65,10 @@ fn init_logging(debug: bool) {
                 None
             }
         } else {
-            eprintln!("Warning: failed to create logs directory at {}", logs_dir.display());
+            eprintln!(
+                "Warning: failed to create logs directory at {}",
+                logs_dir.display()
+            );
             None
         }
     } else {

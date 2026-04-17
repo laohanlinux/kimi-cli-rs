@@ -84,7 +84,9 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
                     error: format!("Failed to save session state: {e}"),
                 };
             }
-            let plan_path_str = plan_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let plan_path_str = plan_path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
             return crate::soul::message::ToolReturnValue::Ok {
                 output: format!(
                     "Plan approved (auto-approved in non-interactive mode). Plan mode deactivated. All tools are now available.\n\
@@ -113,7 +115,11 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
             }
         };
 
-        let options_arr = arguments.get("options").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let options_arr = arguments
+            .get("options")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let has_options = options_arr.len() >= 2;
 
         // Validate reserved labels and uniqueness
@@ -150,8 +156,15 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
                 .iter()
                 .filter_map(|opt| {
                     let label = opt.get("label").and_then(|v| v.as_str())?.to_string();
-                    let desc = opt.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    Some(crate::wire::types::QuestionOption { label, description: desc })
+                    let desc = opt
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(crate::wire::types::QuestionOption {
+                        label,
+                        description: desc,
+                    })
                 })
                 .collect()
         } else {
@@ -162,7 +175,9 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
         };
         question_options.extend(reject_options);
 
-        let plan_path_str = plan_path.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let plan_path_str = plan_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         hub.publish(crate::wire::types::WireMessage::PlanDisplay {
             content: plan_content.clone(),
         });
@@ -182,22 +197,23 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
         let mut rx = hub.subscribe();
         hub.publish(request);
 
-        let answers = match crate::tools::ask_user::wait_for_question_response(&mut rx, &request_id, 300.0).await {
-            Ok(a) => a,
-            Err(e) => {
-                return crate::soul::message::ToolReturnValue::Error {
-                    error: format!("Failed to get user response: {e}"),
-                };
-            }
-        };
+        let answers =
+            match crate::tools::ask_user::wait_for_question_response(&mut rx, &request_id, 300.0)
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    return crate::soul::message::ToolReturnValue::Error {
+                        error: format!("Failed to get user response: {e}"),
+                    };
+                }
+            };
 
         if answers.is_empty() {
             return crate::soul::message::ToolReturnValue::Ok {
-                output: (
-                    "User dismissed without choosing. Plan mode remains active. \
-                     Continue working on your plan or call ExitPlanMode again when ready."
-                )
-                .into(),
+                output: ("User dismissed without choosing. Plan mode remains active. \
+                     Continue working on your plan or call ExitPlanMode again when ready.")
+                    .into(),
                 message: Some("Dismissed".into()),
             };
         }
@@ -211,23 +227,20 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
                 };
             }
             return crate::soul::message::ToolReturnValue::Error {
-                error: (
-                    "Plan rejected by user. Plan mode deactivated. All tools are now available. \
-                     Wait for the user's next message."
-                )
-                .into(),
+                error:
+                    ("Plan rejected by user. Plan mode deactivated. All tools are now available. \
+                     Wait for the user's next message.")
+                        .into(),
             };
         }
 
         let chose_reject = answers.values().any(|v| v == "Reject");
         if chose_reject {
             return crate::soul::message::ToolReturnValue::Error {
-                error: (
-                    "Plan rejected by user. Stay in plan mode. \
+                error: ("Plan rejected by user. Stay in plan mode. \
                      The user will provide feedback via conversation. \
-                     Wait for the user's next message before revising."
-                )
-                .into(),
+                     Wait for the user's next message before revising.")
+                    .into(),
             };
         }
 
@@ -236,7 +249,10 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
                 .iter()
                 .filter_map(|opt| opt.get("label").and_then(|v| v.as_str()).map(String::from))
                 .collect();
-            let chosen_option = answers.values().find(|v| option_labels.contains(*v)).cloned();
+            let chosen_option = answers
+                .values()
+                .find(|v| option_labels.contains(*v))
+                .cloned();
             if let Some(chosen) = chosen_option {
                 state.plan_mode = false;
                 if let Err(e) = crate::session_state::save_session_state(&state, &session_dir) {
@@ -283,11 +299,9 @@ impl crate::soul::toolset::Tool for ExitPlanMode {
             .cloned()
             .unwrap_or_default();
         let msg = if feedback.is_empty() {
-            (
-                "User wants to revise the plan. Stay in plan mode. \
-                 Wait for the user's next message with feedback before revising."
-            )
-            .into()
+            ("User wants to revise the plan. Stay in plan mode. \
+                 Wait for the user's next message with feedback before revising.")
+                .into()
         } else {
             format!(
                 "User wants to revise the plan. Stay in plan mode. \

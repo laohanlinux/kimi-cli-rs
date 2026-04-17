@@ -22,7 +22,9 @@ pub struct BackgroundTaskStore {
 
 impl BackgroundTaskStore {
     pub fn new(root: &Path) -> Self {
-        Self { root: root.to_path_buf() }
+        Self {
+            root: root.to_path_buf(),
+        }
     }
 
     fn store_path(&self) -> PathBuf {
@@ -85,7 +87,10 @@ impl BackgroundTaskStore {
             std::fs::create_dir_all(parent)?;
         }
         use std::io::Write;
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
         file.write_all(text.as_bytes())?;
         Ok(())
     }

@@ -4,7 +4,8 @@ use std::sync::Arc;
 /// Delivery abstraction for notifications.
 #[derive(Clone, Default)]
 pub struct Notifier {
-    handlers: HashMap<String, Arc<dyn Fn(&crate::notifications::manager::Notification) + Send + Sync>>,
+    handlers:
+        HashMap<String, Arc<dyn Fn(&crate::notifications::manager::Notification) + Send + Sync>>,
 }
 
 impl std::fmt::Debug for Notifier {

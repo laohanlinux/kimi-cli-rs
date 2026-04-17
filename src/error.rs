@@ -92,14 +92,11 @@ impl ToolRejectedError {
 
     pub fn for_subagent() -> Self {
         Self {
-            message: (
-                "The tool call is rejected by the user. "
-                .to_string()
+            message: ("The tool call is rejected by the user. ".to_string()
                 + "Try a different approach to complete your task, or explain the "
                 + "limitation in your summary if no alternative is available. "
                 + "Do not retry the same tool call, and do not attempt to bypass "
-                + "this restriction through indirect means."
-            ),
+                + "this restriction through indirect means."),
             brief: "Rejected by user".into(),
             has_feedback: false,
         }
@@ -109,11 +106,8 @@ impl ToolRejectedError {
 impl Default for ToolRejectedError {
     fn default() -> Self {
         Self {
-            message: (
-                "The tool call is rejected by the user. "
-                .to_string()
-                + "Stop what you are doing and wait for the user to tell you how to proceed."
-            ),
+            message: ("The tool call is rejected by the user. ".to_string()
+                + "Stop what you are doing and wait for the user to tell you how to proceed."),
             brief: "Rejected by user".into(),
             has_feedback: false,
         }

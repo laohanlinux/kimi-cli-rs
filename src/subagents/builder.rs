@@ -6,7 +6,9 @@ pub struct SubagentBuilder {
 
 impl SubagentBuilder {
     pub fn new(runtime: crate::soul::agent::Runtime) -> Self {
-        Self { root_runtime: runtime }
+        Self {
+            root_runtime: runtime,
+        }
     }
 
     #[tracing::instrument(level = "debug", skip(self, type_def, launch_spec))]
@@ -34,13 +36,7 @@ impl SubagentBuilder {
             llm_override,
         );
 
-        crate::soul::agent::load_agent(
-            &type_def.agent_file,
-            &runtime,
-            vec![],
-            false,
-        )
-        .await
+        crate::soul::agent::load_agent(&type_def.agent_file, &runtime, vec![], false).await
     }
 
     fn resolve_effective_model(

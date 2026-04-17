@@ -57,7 +57,10 @@ impl ApprovalRuntime {
 
     /// Adds an auto-approve pattern (supports `*` wildcards).
     pub fn add_auto_approve_pattern(&self, pattern: &str) {
-        self.auto_approve_patterns.lock().unwrap().push(pattern.to_string());
+        self.auto_approve_patterns
+            .lock()
+            .unwrap()
+            .push(pattern.to_string());
     }
 
     /// Adds a deny pattern (supports `*` wildcards).
@@ -67,11 +70,7 @@ impl ApprovalRuntime {
 
     /// Evaluates a tool call against configured rules.
     #[tracing::instrument(level = "debug", skip(self, _arguments))]
-    pub fn evaluate(
-        &self,
-        tool_name: &str,
-        _arguments: &serde_json::Value,
-    ) -> ApprovalDecision {
+    pub fn evaluate(&self, tool_name: &str, _arguments: &serde_json::Value) -> ApprovalDecision {
         let deny_patterns = self.deny_patterns.lock().unwrap();
         for pattern in deny_patterns.iter() {
             if wildcard_match(pattern, tool_name) {
@@ -112,7 +111,10 @@ impl ApprovalRuntime {
             display,
             source,
         );
-        self.requests.lock().unwrap().insert(request_id.clone(), request.clone());
+        self.requests
+            .lock()
+            .unwrap()
+            .insert(request_id.clone(), request.clone());
         self._publish_event(ApprovalRuntimeEvent {
             kind: "request_created".into(),
             request: request.clone(),
@@ -151,7 +153,11 @@ impl ApprovalRuntime {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err(crate::error::KimiCliError::ApprovalCancelled),
             Err(_) => {
-                tracing::warn!("Approval request {} timed out after {}s", request_id, timeout_secs);
+                tracing::warn!(
+                    "Approval request {} timed out after {}s",
+                    request_id,
+                    timeout_secs
+                );
                 self._cancel_request(request_id, "approval timed out");
                 Err(crate::error::KimiCliError::ApprovalCancelled)
             }
@@ -220,7 +226,11 @@ impl ApprovalRuntime {
             let requests = self.requests.lock().unwrap();
             requests
                 .values()
-                .filter(|r| r.status == "pending" && r.source.kind == source_kind && r.source.id == source_id)
+                .filter(|r| {
+                    r.status == "pending"
+                        && r.source.kind == source_kind
+                        && r.source.id == source_id
+                })
                 .map(|r| r.id.clone())
                 .collect()
         };
@@ -238,7 +248,11 @@ impl ApprovalRuntime {
             .filter(|r| r.status == "pending")
             .cloned()
             .collect();
-        pending.sort_by(|a, b| a.created_at.partial_cmp(&b.created_at).unwrap_or(std::cmp::Ordering::Equal));
+        pending.sort_by(|a, b| {
+            a.created_at
+                .partial_cmp(&b.created_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         pending
     }
 
@@ -248,12 +262,12 @@ impl ApprovalRuntime {
     }
 
     /// Subscribes to approval runtime events.
-    pub fn subscribe(
-        &self,
-        callback: Box<dyn Fn(ApprovalRuntimeEvent) + Send + Sync>,
-    ) -> String {
+    pub fn subscribe(&self, callback: Box<dyn Fn(ApprovalRuntimeEvent) + Send + Sync>) -> String {
         let token = uuid::Uuid::new_v4().to_string();
-        self.subscribers.lock().unwrap().insert(token.clone(), callback);
+        self.subscribers
+            .lock()
+            .unwrap()
+            .insert(token.clone(), callback);
         token
     }
 
@@ -294,7 +308,11 @@ impl ApprovalRuntime {
             let msg = crate::wire::types::WireMessage::ApprovalResponse {
                 request_id: request_id.into(),
                 response: response.into(),
-                feedback: if feedback.is_empty() { None } else { Some(feedback.into()) },
+                feedback: if feedback.is_empty() {
+                    None
+                } else {
+                    Some(feedback.into())
+                },
             };
             let _ = hub.publish_nowait(msg);
         }
@@ -321,7 +339,10 @@ mod tests {
     fn auto_approve_exact_match() {
         let rt = ApprovalRuntime::default();
         rt.add_auto_approve_pattern("ReadFile");
-        assert_eq!(rt.evaluate("ReadFile", &serde_json::Value::Null), ApprovalDecision::Approve);
+        assert_eq!(
+            rt.evaluate("ReadFile", &serde_json::Value::Null),
+            ApprovalDecision::Approve
+        );
     }
 
     #[test]
@@ -341,7 +362,10 @@ mod tests {
     fn wildcard_auto_approve() {
         let rt = ApprovalRuntime::default();
         rt.add_auto_approve_pattern("Read*");
-        assert_eq!(rt.evaluate("ReadFile", &serde_json::Value::Null), ApprovalDecision::Approve);
+        assert_eq!(
+            rt.evaluate("ReadFile", &serde_json::Value::Null),
+            ApprovalDecision::Approve
+        );
         assert_eq!(
             rt.evaluate("WriteFile", &serde_json::Value::Null),
             ApprovalDecision::RequestUser

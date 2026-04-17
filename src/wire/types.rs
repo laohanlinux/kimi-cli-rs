@@ -4,33 +4,85 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WireMessage {
-    TurnBegin { user_input: String },
-    StepBegin { step_no: usize },
+    TurnBegin {
+        user_input: String,
+    },
+    StepBegin {
+        step_no: usize,
+    },
     StepInterrupted,
-    TurnEnd { stop_reason: String },
+    TurnEnd {
+        stop_reason: String,
+    },
     CompactionBegin,
     CompactionEnd,
-    StatusUpdate { snapshot: StatusSnapshot },
-    Notification { text: String },
-    PlanDisplay { content: String },
-    BtwBegin { id: String, question: String },
-    BtwEnd { id: String, response: Option<String>, error: Option<String> },
-    SubagentEvent { agent_id: String, event: String },
-    HookTriggered { hook_name: String },
-    HookResolved { hook_name: String, duration_ms: u64 },
+    StatusUpdate {
+        snapshot: StatusSnapshot,
+    },
+    Notification {
+        text: String,
+    },
+    PlanDisplay {
+        content: String,
+    },
+    BtwBegin {
+        id: String,
+        question: String,
+    },
+    BtwEnd {
+        id: String,
+        response: Option<String>,
+        error: Option<String>,
+    },
+    SubagentEvent {
+        agent_id: String,
+        event: String,
+    },
+    HookTriggered {
+        hook_name: String,
+    },
+    HookResolved {
+        hook_name: String,
+        duration_ms: u64,
+    },
     McpLoadingBegin,
     McpLoadingEnd,
 
-    TextPart { text: String },
-    ThinkPart { thought: String },
-    ImageUrlPart { url: String },
-    AudioUrlPart { url: String },
-    VideoUrlPart { url: String },
+    TextPart {
+        text: String,
+    },
+    ThinkPart {
+        thought: String,
+    },
+    ImageUrlPart {
+        url: String,
+    },
+    AudioUrlPart {
+        url: String,
+    },
+    VideoUrlPart {
+        url: String,
+    },
 
-    ToolCall { tool_call_id: String, name: String, arguments: serde_json::Value },
-    ToolCallPart { tool_call_id: String, index: usize, content: serde_json::Value },
-    ToolResult { tool_call_id: String, result: crate::soul::message::ToolReturnValue },
-    ApprovalResponse { request_id: String, response: String, feedback: Option<String> },
+    ToolCall {
+        tool_call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolCallPart {
+        tool_call_id: String,
+        index: usize,
+        content: serde_json::Value,
+    },
+    ToolResult {
+        tool_call_id: String,
+        result: crate::soul::message::ToolReturnValue,
+    },
+    ApprovalResponse {
+        request_id: String,
+        response: String,
+        feedback: Option<String>,
+    },
 
     ApprovalRequest {
         id: String,

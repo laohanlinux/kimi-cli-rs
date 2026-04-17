@@ -81,7 +81,10 @@ impl SubagentStore {
     }
 
     /// Loads an instance record if it exists.
-    pub fn get_instance(&self, agent_id: &str) -> Option<crate::subagents::models::AgentInstanceRecord> {
+    pub fn get_instance(
+        &self,
+        agent_id: &str,
+    ) -> Option<crate::subagents::models::AgentInstanceRecord> {
         let path = self.meta_path(agent_id);
         if !path.exists() {
             return None;
@@ -91,12 +94,16 @@ impl SubagentStore {
     }
 
     /// Requires an instance record to exist.
-    pub fn require_instance(&self, agent_id: &str) -> crate::error::Result<crate::subagents::models::AgentInstanceRecord> {
-        self.get_instance(agent_id)
-            .ok_or_else(|| crate::error::KimiCliError::Io(std::io::Error::new(
+    pub fn require_instance(
+        &self,
+        agent_id: &str,
+    ) -> crate::error::Result<crate::subagents::models::AgentInstanceRecord> {
+        self.get_instance(agent_id).ok_or_else(|| {
+            crate::error::KimiCliError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("Subagent instance not found: {agent_id}"),
-            )))
+            ))
+        })
     }
 
     /// Updates specific fields of an instance record.
@@ -144,11 +151,9 @@ impl SubagentStore {
             if !meta.exists() {
                 continue;
             }
-            if let Some(record) = self.get_instance(
-                path.file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(""),
-            ) {
+            if let Some(record) =
+                self.get_instance(path.file_name().and_then(|s| s.to_str()).unwrap_or(""))
+            {
                 records.push(record);
             }
         }

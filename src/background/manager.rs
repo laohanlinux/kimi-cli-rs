@@ -98,7 +98,9 @@ impl BackgroundTaskManager {
         let max = runtime.config.background.max_running_tasks;
         *self.max_running_tasks.lock().await = max;
         let store_dir = runtime.session.dir().join("background");
-        self.store = Some(Arc::new(crate::background::store::BackgroundTaskStore::new(&store_dir)));
+        self.store = Some(Arc::new(
+            crate::background::store::BackgroundTaskStore::new(&store_dir),
+        ));
         tracing::debug!(max_running_tasks = max, dir = %store_dir.display(), "bound runtime to background manager");
     }
 
@@ -137,12 +139,18 @@ impl BackgroundTaskManager {
             vec!["-c".into(), command.into()]
         };
 
-        let child = Command::new(shell_path)
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| crate::error::KimiCliError::Io(e.into()))?;
+        let child = {
+            let mut cmd = Command::new(shell_path);
+            crate::utils::subprocess_env::apply_to_tokio(
+                &mut cmd,
+                crate::utils::subprocess_env::get_clean_env(),
+            );
+            cmd.args(&args)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        }
+        .map_err(|e| crate::error::KimiCliError::Io(e.into()))?;
 
         *task.child.lock().await = Some(child);
 
@@ -223,7 +231,8 @@ impl BackgroundTaskManager {
             let record = crate::background::store::TaskRecord {
                 id: id.clone(),
                 command: command.to_string(),
-                created_at: task.created_at
+                created_at: task
+                    .created_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs_f64(),
@@ -258,7 +267,8 @@ impl BackgroundTaskManager {
                     let task = BackgroundTask {
                         id: record.id,
                         command: record.command,
-                        created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(record.created_at),
+                        created_at: std::time::UNIX_EPOCH
+                            + std::time::Duration::from_secs_f64(record.created_at),
                         stdout: Arc::new(Mutex::new(String::new())),
                         stderr: Arc::new(Mutex::new(String::new())),
                         exit_code: Arc::new(Mutex::new(record.exit_code)),
@@ -283,7 +293,8 @@ impl BackgroundTaskManager {
                 return Some(BackgroundTask {
                     id: record.id,
                     command: record.command,
-                    created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(record.created_at),
+                    created_at: std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs_f64(record.created_at),
                     stdout: Arc::new(Mutex::new(String::new())),
                     stderr: Arc::new(Mutex::new(String::new())),
                     exit_code: Arc::new(Mutex::new(record.exit_code)),
@@ -330,6 +341,12 @@ impl BackgroundTaskManager {
             .join(format!("{id}.log"))
     }
 
+    /// Whether the on-disk log for this task exists so agents can use `ReadFile` on
+    /// [`Self::resolve_output_path`] to page through full output (matches Python `full_output_available`).
+    pub fn output_log_file_available(&self, id: &str) -> bool {
+        self.resolve_output_path(id).is_file()
+    }
+
     /// Reads a chunk of task output from memory or store.
     pub async fn read_output(&self, id: &str, offset: u64, max_bytes: usize) -> OutputChunk {
         let text = if let Some(task) = self.get(id).await {
@@ -353,8 +370,8 @@ impl BackgroundTaskManager {
     /// Reconciles running tasks against a notification claim deadline.
     pub async fn reconcile(&self, before_claim_ms: u64) -> Vec<BackgroundTask> {
         let all = self.list(false).await;
-        let cutoff = std::time::SystemTime::now()
-            - std::time::Duration::from_millis(before_claim_ms);
+        let cutoff =
+            std::time::SystemTime::now() - std::time::Duration::from_millis(before_claim_ms);
         let mut result = Vec::new();
         for t in all {
             if t.is_running().await && t.created_at < cutoff {
@@ -390,10 +407,13 @@ impl BackgroundTaskManager {
 
         tokio::spawn(async move {
             let result = if let Some(t) = timeout_s {
-                match tokio::time::timeout(tokio::time::Duration::from_secs(t), runner.run(&req)).await {
+                match tokio::time::timeout(tokio::time::Duration::from_secs(t), runner.run(&req))
+                    .await
+                {
                     Ok(r) => r,
                     Err(_) => {
-                        *task_clone.failure_reason.lock().await = Some(format!("Timed out after {}s", t));
+                        *task_clone.failure_reason.lock().await =
+                            Some(format!("Timed out after {}s", t));
                         crate::soul::message::ToolReturnValue::Error {
                             error: format!("Agent timed out after {t}s."),
                         }
@@ -413,7 +433,9 @@ impl BackgroundTaskManager {
                         .iter()
                         .filter_map(|p| match p {
                             crate::soul::message::ContentPart::Text { text } => Some(text.as_str()),
-                            crate::soul::message::ContentPart::Think { thought } => Some(thought.as_str()),
+                            crate::soul::message::ContentPart::Think { thought } => {
+                                Some(thought.as_str())
+                            }
                             _ => None,
                         })
                         .collect::<Vec<_>>()
@@ -452,7 +474,8 @@ impl BackgroundTaskManager {
             let record = crate::background::store::TaskRecord {
                 id: id.clone(),
                 command: task.command.clone(),
-                created_at: task.created_at
+                created_at: task
+                    .created_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs_f64(),
@@ -489,7 +512,8 @@ impl BackgroundTaskManager {
                 let record = crate::background::store::TaskRecord {
                     id: id.into(),
                     command: task.command.clone(),
-                    created_at: task.created_at
+                    created_at: task
+                        .created_at
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs_f64(),
@@ -507,6 +531,29 @@ impl BackgroundTaskManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn mgr_with_store(
+        store: Arc<crate::background::store::BackgroundTaskStore>,
+    ) -> BackgroundTaskManager {
+        BackgroundTaskManager {
+            tasks: Arc::new(RwLock::new(HashMap::new())),
+            max_running_tasks: Arc::new(Mutex::new(10)),
+            store: Some(store),
+        }
+    }
+
+    #[test]
+    fn output_log_file_available_tracks_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::background::store::BackgroundTaskStore::new(
+            tmp.path(),
+        ));
+        let mgr = mgr_with_store(store.clone());
+        assert!(!mgr.output_log_file_available("t1"));
+        store.append_output("t1", "line\n").unwrap();
+        assert!(mgr.output_log_file_available("t1"));
+    }
 
     #[tokio::test]
     async fn background_manager_stop_kills_child() {
@@ -518,7 +565,10 @@ mod tests {
             .await
             .expect("spawn should succeed");
 
-        assert!(task.is_running().await, "task should be running after spawn");
+        assert!(
+            task.is_running().await,
+            "task should be running after spawn"
+        );
 
         let stopped = manager.stop(&task.id).await;
         assert!(stopped.is_some(), "stop should return the task");
@@ -532,7 +582,10 @@ mod tests {
         );
 
         // Ensure the task is removed from the manager.
-        assert!(manager.get(&task.id).await.is_none(), "task should be removed from manager");
+        assert!(
+            manager.get(&task.id).await.is_none(),
+            "task should be removed from manager"
+        );
     }
 
     #[tokio::test]
@@ -546,6 +599,9 @@ mod tests {
             .expect("first spawn should succeed");
 
         let result = manager.spawn("sleep 10", "/bin/sh", false).await;
-        assert!(result.is_err(), "second spawn should exceed max running tasks");
+        assert!(
+            result.is_err(),
+            "second spawn should exceed max running tasks"
+        );
     }
 }

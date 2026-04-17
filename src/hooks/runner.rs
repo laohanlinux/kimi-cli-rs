@@ -52,6 +52,10 @@ pub async fn run_hook(
     };
 
     let mut cmd = tokio::process::Command::new("sh");
+    crate::utils::subprocess_env::apply_to_tokio(
+        &mut cmd,
+        crate::utils::subprocess_env::get_clean_env(),
+    );
     cmd.arg("-c").arg(command);
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -131,7 +135,11 @@ pub async fn run_hook(
     if exit_code == 0 && !stdout.trim().is_empty() {
         if let Ok(raw) = serde_json::from_str::<Value>(&stdout) {
             if let Some(hook_output) = raw.get("hookSpecificOutput").and_then(|v| v.as_object()) {
-                if hook_output.get("permissionDecision").and_then(|v| v.as_str()) == Some("deny") {
+                if hook_output
+                    .get("permissionDecision")
+                    .and_then(|v| v.as_str())
+                    == Some("deny")
+                {
                     return HookResult {
                         action: HookAction::Block,
                         reason: hook_output

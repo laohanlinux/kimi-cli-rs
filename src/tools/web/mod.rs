@@ -41,7 +41,10 @@ impl crate::soul::toolset::Tool for SearchWeb {
             }
         };
         let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-        let include_content = arguments.get("include_content").and_then(|v| v.as_bool()).unwrap_or(false);
+        let include_content = arguments
+            .get("include_content")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if let Some(ref config) = runtime.config.services.moonshot_search {
             return search_moonshot(query, limit, include_content, config, runtime).await;
@@ -121,8 +124,15 @@ async fn search_moonshot(
     };
 
     let mut headers = reqwest::header::HeaderMap::new();
-    let _ = headers.insert("User-Agent", crate::constant::USER_AGENT.as_str().parse().unwrap());
-    let api_key = match runtime.oauth.resolve_api_key(&config.api_key, config.oauth.as_ref()).await {
+    let _ = headers.insert(
+        "User-Agent",
+        crate::constant::USER_AGENT.as_str().parse().unwrap(),
+    );
+    let api_key = match runtime
+        .oauth
+        .resolve_api_key(&config.api_key, config.oauth.as_ref())
+        .await
+    {
         Some(k) => k,
         None => {
             return crate::soul::message::ToolReturnValue::Error {
@@ -132,7 +142,9 @@ async fn search_moonshot(
     };
     let _ = headers.insert(
         "Authorization",
-        format!("Bearer {}", api_key.expose_secret()).parse().unwrap(),
+        format!("Bearer {}", api_key.expose_secret())
+            .parse()
+            .unwrap(),
     );
     for (k, v) in runtime.oauth.common_headers() {
         if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
@@ -157,7 +169,13 @@ async fn search_moonshot(
         "timeout_seconds": 30,
     });
 
-    let response = match client.post(&config.base_url).headers(headers).json(&body).send().await {
+    let response = match client
+        .post(&config.base_url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) if e.is_timeout() => {
             return crate::soul::message::ToolReturnValue::Error {
@@ -187,7 +205,11 @@ async fn search_moonshot(
         }
     };
 
-    let results = json.get("search_results").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let results = json
+        .get("search_results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     if results.is_empty() {
         return crate::soul::message::ToolReturnValue::Ok {
             output: "No search results found.".into(),
@@ -220,7 +242,10 @@ async fn search_moonshot(
 
     crate::soul::message::ToolReturnValue::Ok {
         output: lines.join("\n"),
-        message: Some(format!("Found {} search results.", results.len().min(limit))),
+        message: Some(format!(
+            "Found {} search results.",
+            results.len().min(limit)
+        )),
     }
 }
 
@@ -237,7 +262,10 @@ async fn search_duckduckgo(query: &str, limit: usize) -> crate::soul::message::T
         }
     };
 
-    let url = format!("https://lite.duckduckgo.com/lite/?q={}", query.replace(' ', "+"));
+    let url = format!(
+        "https://lite.duckduckgo.com/lite/?q={}",
+        query.replace(' ', "+")
+    );
     let response = match client
         .get(&url)
         .header("User-Agent", crate::constant::USER_AGENT.as_str())
@@ -294,7 +322,10 @@ async fn search_duckduckgo(query: &str, limit: usize) -> crate::soul::message::T
 
     crate::soul::message::ToolReturnValue::Ok {
         output: lines.join("\n"),
-        message: Some(format!("Found {} search results via DuckDuckGo.", results.len().min(limit))),
+        message: Some(format!(
+            "Found {} search results via DuckDuckGo.",
+            results.len().min(limit)
+        )),
     }
 }
 
@@ -308,8 +339,10 @@ fn parse_duckduckgo_results(html: &str) -> Vec<SearchResult> {
     let mut results = Vec::new();
     // DuckDuckGo Lite uses table rows with result links and snippets.
     // This is a best-effort regex-based parser.
-    let link_re = regex::Regex::new(r#"<a[^>]+class=""[^>]*href="([^"]+)"[^>]*>([^<]+)</a>"#).unwrap();
-    let snippet_re = regex::Regex::new(r#"<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#).unwrap();
+    let link_re =
+        regex::Regex::new(r#"<a[^>]+class=""[^>]*href="([^"]+)"[^>]*>([^<]+)</a>"#).unwrap();
+    let snippet_re =
+        regex::Regex::new(r#"<td[^>]*class="result-snippet"[^>]*>(.*?)</td>"#).unwrap();
 
     let links: Vec<(String, String)> = link_re
         .captures_iter(html)
@@ -361,7 +394,11 @@ async fn fetch_moonshot(
         }
     };
 
-    let api_key = match runtime.oauth.resolve_api_key(&config.api_key, config.oauth.as_ref()).await {
+    let api_key = match runtime
+        .oauth
+        .resolve_api_key(&config.api_key, config.oauth.as_ref())
+        .await
+    {
         Some(k) => k,
         None => {
             return crate::soul::message::ToolReturnValue::Error {
@@ -371,10 +408,15 @@ async fn fetch_moonshot(
     };
 
     let mut headers = reqwest::header::HeaderMap::new();
-    let _ = headers.insert("User-Agent", crate::constant::USER_AGENT.as_str().parse().unwrap());
+    let _ = headers.insert(
+        "User-Agent",
+        crate::constant::USER_AGENT.as_str().parse().unwrap(),
+    );
     let _ = headers.insert(
         "Authorization",
-        format!("Bearer {}", api_key.expose_secret()).parse().unwrap(),
+        format!("Bearer {}", api_key.expose_secret())
+            .parse()
+            .unwrap(),
     );
     for (k, v) in runtime.oauth.common_headers() {
         if let Ok(name) = reqwest::header::HeaderName::from_bytes(k.as_bytes()) {
@@ -395,7 +437,13 @@ async fn fetch_moonshot(
 
     let body = serde_json::json!({ "url": url });
 
-    let response = match client.post(&config.base_url).headers(headers).json(&body).send().await {
+    let response = match client
+        .post(&config.base_url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) if e.is_timeout() => {
             return crate::soul::message::ToolReturnValue::Error {
@@ -509,7 +557,10 @@ async fn fetch_with_http_get(url: &str) -> crate::soul::message::ToolReturnValue
     if extracted.is_empty() {
         return crate::soul::message::ToolReturnValue::Ok {
             output: body,
-            message: Some("The returned content is the raw page body. HTML extraction yielded no text.".into()),
+            message: Some(
+                "The returned content is the raw page body. HTML extraction yielded no text."
+                    .into(),
+            ),
         };
     }
 
@@ -595,7 +646,10 @@ mod tests {
         let tool = FetchUrl::default();
         let rt = crate::soul::agent::Runtime::default();
         let result = tool.call(serde_json::json!({"url": ""}), &rt).await;
-        assert!(matches!(result, crate::soul::message::ToolReturnValue::Error { .. }));
+        assert!(matches!(
+            result,
+            crate::soul::message::ToolReturnValue::Error { .. }
+        ));
     }
 
     #[tokio::test]
@@ -603,7 +657,10 @@ mod tests {
         let tool = SearchWeb::default();
         let rt = crate::soul::agent::Runtime::default();
         let result = tool.call(serde_json::json!({"query": ""}), &rt).await;
-        assert!(matches!(result, crate::soul::message::ToolReturnValue::Error { .. }));
+        assert!(matches!(
+            result,
+            crate::soul::message::ToolReturnValue::Error { .. }
+        ));
     }
 
     #[test]

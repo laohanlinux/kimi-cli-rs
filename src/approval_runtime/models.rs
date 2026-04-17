@@ -65,10 +65,12 @@ impl ApprovalRequestRecord {
             description,
             display,
             source,
-            created_at: Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64()),
+            created_at: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64(),
+            ),
             status: "pending".into(),
             resolved_at: None,
             response: None,

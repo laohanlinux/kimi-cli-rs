@@ -6,8 +6,8 @@ pub mod message;
 pub mod storage;
 
 pub use draw::{
-    draw_header, draw_input, draw_messages, draw_status_footer, main_vertical_layout, welcome_message,
-    WELCOME_TEXT_PREFIX,
+    WELCOME_TEXT_PREFIX, draw_header, draw_input, draw_messages, draw_status_footer,
+    main_vertical_layout, welcome_message,
 };
 pub use input_state::InputState;
 pub use message::{ReplMessage, ReplMessageRole};

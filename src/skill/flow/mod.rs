@@ -124,7 +124,11 @@ pub fn validate_flow(
             }
         }
 
-        let unreachable: Vec<_> = nodes.keys().filter(|k| !visited.contains(k.as_str())).cloned().collect();
+        let unreachable: Vec<_> = nodes
+            .keys()
+            .filter(|k| !visited.contains(k.as_str()))
+            .cloned()
+            .collect();
         if !unreachable.is_empty() {
             return Err(FlowError::new(format!(
                 "Unreachable nodes: {}",

@@ -73,7 +73,12 @@ pub fn stop(session_id: &str, cwd: &str, stop_hook_active: bool) -> Map<String, 
 }
 
 /// StopFailure hook payload.
-pub fn stop_failure(session_id: &str, cwd: &str, error_type: &str, error_message: &str) -> Map<String, Value> {
+pub fn stop_failure(
+    session_id: &str,
+    cwd: &str,
+    error_type: &str,
+    error_message: &str,
+) -> Map<String, Value> {
     let mut payload = base("StopFailure", session_id, cwd);
     payload.insert("error_type".into(), Value::String(error_type.into()));
     payload.insert("error_message".into(), Value::String(error_message.into()));
@@ -95,7 +100,12 @@ pub fn session_end(session_id: &str, cwd: &str, reason: &str) -> Map<String, Val
 }
 
 /// SubagentStart hook payload.
-pub fn subagent_start(session_id: &str, cwd: &str, agent_name: &str, prompt: &str) -> Map<String, Value> {
+pub fn subagent_start(
+    session_id: &str,
+    cwd: &str,
+    agent_name: &str,
+    prompt: &str,
+) -> Map<String, Value> {
     let mut payload = base("SubagentStart", session_id, cwd);
     payload.insert("agent_name".into(), Value::String(agent_name.into()));
     payload.insert("prompt".into(), Value::String(prompt.into()));
@@ -103,7 +113,12 @@ pub fn subagent_start(session_id: &str, cwd: &str, agent_name: &str, prompt: &st
 }
 
 /// SubagentStop hook payload.
-pub fn subagent_stop(session_id: &str, cwd: &str, agent_name: &str, response: &str) -> Map<String, Value> {
+pub fn subagent_stop(
+    session_id: &str,
+    cwd: &str,
+    agent_name: &str,
+    response: &str,
+) -> Map<String, Value> {
     let mut payload = base("SubagentStop", session_id, cwd);
     payload.insert("agent_name".into(), Value::String(agent_name.into()));
     payload.insert("response".into(), Value::String(response.into()));
@@ -111,7 +126,12 @@ pub fn subagent_stop(session_id: &str, cwd: &str, agent_name: &str, response: &s
 }
 
 /// PreCompact hook payload.
-pub fn pre_compact(session_id: &str, cwd: &str, trigger: &str, token_count: usize) -> Map<String, Value> {
+pub fn pre_compact(
+    session_id: &str,
+    cwd: &str,
+    trigger: &str,
+    token_count: usize,
+) -> Map<String, Value> {
     let mut payload = base("PreCompact", session_id, cwd);
     payload.insert("trigger".into(), Value::String(trigger.into()));
     payload.insert("token_count".into(), Value::Number(token_count.into()));
@@ -119,10 +139,18 @@ pub fn pre_compact(session_id: &str, cwd: &str, trigger: &str, token_count: usiz
 }
 
 /// PostCompact hook payload.
-pub fn post_compact(session_id: &str, cwd: &str, trigger: &str, estimated_token_count: usize) -> Map<String, Value> {
+pub fn post_compact(
+    session_id: &str,
+    cwd: &str,
+    trigger: &str,
+    estimated_token_count: usize,
+) -> Map<String, Value> {
     let mut payload = base("PostCompact", session_id, cwd);
     payload.insert("trigger".into(), Value::String(trigger.into()));
-    payload.insert("estimated_token_count".into(), Value::Number(estimated_token_count.into()));
+    payload.insert(
+        "estimated_token_count".into(),
+        Value::Number(estimated_token_count.into()),
+    );
     payload
 }
 
@@ -138,7 +166,10 @@ pub fn notification(
 ) -> Map<String, Value> {
     let mut payload = base("Notification", session_id, cwd);
     payload.insert("sink".into(), Value::String(sink.into()));
-    payload.insert("notification_type".into(), Value::String(notification_type.into()));
+    payload.insert(
+        "notification_type".into(),
+        Value::String(notification_type.into()),
+    );
     payload.insert("title".into(), Value::String(title.into()));
     payload.insert("body".into(), Value::String(body.into()));
     payload.insert("severity".into(), Value::String(severity.into()));

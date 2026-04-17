@@ -72,7 +72,12 @@ impl Llm {
         history: &[crate::soul::message::Message],
         tools: Option<&crate::soul::toolset::KimiToolset>,
     ) -> crate::error::Result<crate::soul::message::Message> {
-        if self.base_url.is_empty() && !matches!(self.provider_type, ProviderType::Echo | ProviderType::ScriptedEcho | ProviderType::Chaos) {
+        if self.base_url.is_empty()
+            && !matches!(
+                self.provider_type,
+                ProviderType::Echo | ProviderType::ScriptedEcho | ProviderType::Chaos
+            )
+        {
             return Ok(crate::soul::message::Message {
                 role: "assistant".into(),
                 content: vec![crate::soul::message::ContentPart::Text {
@@ -88,7 +93,10 @@ impl Llm {
             ProviderType::ScriptedEcho => self.chat_scripted_echo(),
             ProviderType::Chaos => self.chat_chaos(),
             ProviderType::Anthropic => self.chat_anthropic(system_prompt, history, tools).await,
-            _ => self.chat_openai_compatible(system_prompt, history, tools).await,
+            _ => {
+                self.chat_openai_compatible(system_prompt, history, tools)
+                    .await
+            }
         }
     }
 
@@ -111,11 +119,15 @@ impl Llm {
         let text = if parts.is_empty() {
             "echo: no input".into()
         } else {
-            parts.iter().map(|p| match p {
-                crate::soul::message::ContentPart::Text { text } => text.as_str(),
-                crate::soul::message::ContentPart::Think { thought } => thought.as_str(),
-                _ => "",
-            }).collect::<Vec<_>>().join("\n\n")
+            parts
+                .iter()
+                .map(|p| match p {
+                    crate::soul::message::ContentPart::Text { text } => text.as_str(),
+                    crate::soul::message::ContentPart::Think { thought } => thought.as_str(),
+                    _ => "",
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
         };
         Ok(crate::soul::message::Message {
             role: "assistant".into(),
@@ -126,7 +138,11 @@ impl Llm {
     }
 
     fn chat_scripted_echo(&self) -> crate::error::Result<crate::soul::message::Message> {
-        let text = self.scripted_echo_lines.first().cloned().unwrap_or_else(|| "scripted_echo: end of script".into());
+        let text = self
+            .scripted_echo_lines
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "scripted_echo: end of script".into());
         Ok(crate::soul::message::Message {
             role: "assistant".into(),
             content: vec![crate::soul::message::ContentPart::Text { text }],
@@ -189,7 +205,10 @@ impl Llm {
         let mut req = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key.expose_secret()));
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            );
 
         if matches!(self.provider_type, ProviderType::Kimi) {
             req = req.header("X-Msh-Context-Caching", "true");
@@ -217,16 +236,13 @@ not `.../v1` (otherwise the client calls `.../v1/v1/chat/completions` and gets 4
             return Err(crate::error::KimiCliError::Generic(msg));
         }
 
-        let chat_response: ChatResponse = response
-            .json()
-            .await
-            .map_err(|e| crate::error::KimiCliError::Generic(format!("Failed to parse LLM response: {e}")))?;
+        let chat_response: ChatResponse = response.json().await.map_err(|e| {
+            crate::error::KimiCliError::Generic(format!("Failed to parse LLM response: {e}"))
+        })?;
 
-        let choice = chat_response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| crate::error::KimiCliError::Generic("Empty LLM response choices".into()))?;
+        let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
+            crate::error::KimiCliError::Generic("Empty LLM response choices".into())
+        })?;
 
         Ok(convert_chat_message(&choice.message))
     }
@@ -278,15 +294,14 @@ not `.../v1` (otherwise the client calls `.../v1/v1/chat/completions` and gets 4
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(crate::error::KimiCliError::Generic(
-                format!("Anthropic request failed: HTTP {status} - {body}"),
-            ));
+            return Err(crate::error::KimiCliError::Generic(format!(
+                "Anthropic request failed: HTTP {status} - {body}"
+            )));
         }
 
-        let anthropic_response: AnthropicResponse = response
-            .json()
-            .await
-            .map_err(|e| crate::error::KimiCliError::Generic(format!("Failed to parse Anthropic response: {e}")))?;
+        let anthropic_response: AnthropicResponse = response.json().await.map_err(|e| {
+            crate::error::KimiCliError::Generic(format!("Failed to parse Anthropic response: {e}"))
+        })?;
 
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
@@ -308,7 +323,11 @@ not `.../v1` (otherwise the client calls `.../v1/v1/chat/completions` and gets 4
             content: vec![crate::soul::message::ContentPart::Text {
                 text: text_parts.join("\n"),
             }],
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             tool_call_id: None,
         })
     }
@@ -401,7 +420,11 @@ enum AnthropicContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -450,9 +473,9 @@ fn convert_chat_message(msg: &ChatMessage) -> crate::soul::message::Message {
                 .map(|c| crate::soul::message::ToolCall {
                     id: c.id.clone(),
                     name: c.function.name.clone(),
-                    arguments: serde_json::from_str(&c.function.arguments).unwrap_or_else(|_| {
-                        serde_json::json!({"raw": c.function.arguments.clone()})
-                    }),
+                    arguments: serde_json::from_str(&c.function.arguments).unwrap_or_else(
+                        |_| serde_json::json!({"raw": c.function.arguments.clone()}),
+                    ),
                 })
                 .collect()
         }),
@@ -489,12 +512,18 @@ fn convert_message_to_anthropic(msg: &crate::soul::message::Message) -> Anthropi
         }
     }
     AnthropicMessage {
-        role: if msg.role == "assistant" { "assistant".into() } else { "user".into() },
+        role: if msg.role == "assistant" {
+            "assistant".into()
+        } else {
+            "user".into()
+        },
         content,
     }
 }
 
-fn convert_tools_to_anthropic(toolset: &crate::soul::toolset::KimiToolset) -> Vec<AnthropicToolDef> {
+fn convert_tools_to_anthropic(
+    toolset: &crate::soul::toolset::KimiToolset,
+) -> Vec<AnthropicToolDef> {
     toolset
         .tools_sync()
         .iter()
@@ -525,10 +554,7 @@ pub async fn create_llm(
     thinking: Option<bool>,
     _session_id: Option<&str>,
 ) -> crate::error::Result<Option<Llm>> {
-    let provider_type = provider
-        .r#type
-        .parse()
-        .unwrap_or(ProviderType::Kimi);
+    let provider_type = provider.r#type.parse().unwrap_or(ProviderType::Kimi);
     let mut capabilities = derive_model_capabilities(model);
     if thinking.unwrap_or(false) {
         capabilities.insert(ModelCapability::Thinking);
@@ -567,16 +593,11 @@ pub async fn clone_llm_with_model_alias(
     let Some(alias) = model_alias else {
         return Ok(llm.cloned());
     };
-    let model = config
-        .models
-        .get(alias)
-        .ok_or_else(|| crate::error::KimiCliError::Config(
-            format!("Unknown model alias: {alias}").into()
-        ))?;
+    let model = config.models.get(alias).ok_or_else(|| {
+        crate::error::KimiCliError::Config(format!("Unknown model alias: {alias}").into())
+    })?;
     let provider = config.providers.get(&model.provider).ok_or_else(|| {
-        crate::error::KimiCliError::Config(
-            format!("Provider not found for model: {alias}").into()
-        )
+        crate::error::KimiCliError::Config(format!("Provider not found for model: {alias}").into())
     })?;
     let thinking = llm.and_then(|l| l.thinking);
     let mut new_llm = create_llm(provider, model, thinking, None).await?;
@@ -623,18 +644,25 @@ fn augment_base_url_with_env(base_url: &str, provider_type: ProviderType) -> Str
         ProviderType::Kimi => "KIMI_BASE_URL",
         ProviderType::Anthropic => "ANTHROPIC_BASE_URL",
         ProviderType::OpenAiLegacy | ProviderType::OpenAiResponses => "OPENAI_BASE_URL",
-        ProviderType::GoogleGenAi | ProviderType::Gemini | ProviderType::VertexAi => "GOOGLE_GENAI_BASE_URL",
+        ProviderType::GoogleGenAi | ProviderType::Gemini | ProviderType::VertexAi => {
+            "GOOGLE_GENAI_BASE_URL"
+        }
         _ => return base_url.into(),
     };
     std::env::var(env_var).unwrap_or_else(|_| base_url.into())
 }
 
-fn augment_api_key_with_env(api_key: &secrecy::SecretString, provider_type: ProviderType) -> secrecy::SecretString {
+fn augment_api_key_with_env(
+    api_key: &secrecy::SecretString,
+    provider_type: ProviderType,
+) -> secrecy::SecretString {
     let env_var = match provider_type {
         ProviderType::Kimi => "KIMI_API_KEY",
         ProviderType::Anthropic => "ANTHROPIC_API_KEY",
         ProviderType::OpenAiLegacy | ProviderType::OpenAiResponses => "OPENAI_API_KEY",
-        ProviderType::GoogleGenAi | ProviderType::Gemini | ProviderType::VertexAi => "GOOGLE_GENAI_API_KEY",
+        ProviderType::GoogleGenAi | ProviderType::Gemini | ProviderType::VertexAi => {
+            "GOOGLE_GENAI_API_KEY"
+        }
         _ => return api_key.clone(),
     };
     std::env::var(env_var)

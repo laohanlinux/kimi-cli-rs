@@ -15,8 +15,15 @@ pub struct DenwaRenji {
 impl Clone for DenwaRenji {
     fn clone(&self) -> Self {
         Self {
-            pending_dmail: std::sync::Mutex::new(self.pending_dmail.lock().unwrap_or_else(|e| e.into_inner()).clone()),
-            n_checkpoints: std::sync::Mutex::new(*self.n_checkpoints.lock().unwrap_or_else(|e| e.into_inner())),
+            pending_dmail: std::sync::Mutex::new(
+                self.pending_dmail
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            ),
+            n_checkpoints: std::sync::Mutex::new(
+                *self.n_checkpoints.lock().unwrap_or_else(|e| e.into_inner()),
+            ),
         }
     }
 }
@@ -47,6 +54,9 @@ impl DenwaRenji {
 
     /// Fetches and clears any pending D-Mail.
     pub fn fetch_pending_dmail(&self) -> Option<DMail> {
-        self.pending_dmail.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.pending_dmail
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 }

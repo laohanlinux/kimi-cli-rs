@@ -28,7 +28,9 @@ impl Agent {
 
         let rt = runtime.labor_market.read().await;
         for (name, type_def) in &rt.builtin_types {
-            let tool_names = if type_def.tool_policy.mode == crate::subagents::labor_market::ToolPolicyMode::Inherit {
+            let tool_names = if type_def.tool_policy.mode
+                == crate::subagents::labor_market::ToolPolicyMode::Inherit
+            {
                 "*".into()
             } else if type_def.tool_policy.tools.is_empty() {
                 "(none)".into()
@@ -36,11 +38,18 @@ impl Agent {
                 type_def.tool_policy.tools.join(", ")
             };
             let model = type_def.default_model.as_deref().unwrap_or("inherit");
-            let background = if type_def.supports_background { "yes" } else { "no" };
+            let background = if type_def.supports_background {
+                "yes"
+            } else {
+                "no"
+            };
             let when = if type_def.when_to_use.is_empty() {
                 String::new()
             } else {
-                format!(" When to use: {}", Self::normalize_summary(&type_def.when_to_use))
+                format!(
+                    " When to use: {}",
+                    Self::normalize_summary(&type_def.when_to_use)
+                )
             };
             lines.push(format!(
                 "- `{name}`: {description} (Tools: {tool_names}, Model: {model}, Background: {background}).{when}",
@@ -151,8 +160,14 @@ impl crate::soul::toolset::Tool for Agent {
             .and_then(|v| v.as_str())
             .unwrap_or("coder")
             .to_string();
-        let model = arguments.get("model").and_then(|v| v.as_str()).map(String::from);
-        let resume = arguments.get("resume").and_then(|v| v.as_str()).map(String::from);
+        let model = arguments
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let resume = arguments
+            .get("resume")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let run_in_background = arguments
             .get("run_in_background")
             .and_then(|v| v.as_bool())
@@ -176,7 +191,11 @@ impl crate::soul::toolset::Tool for Agent {
         };
 
         if run_in_background {
-            match runtime.background_tasks.create_agent_task(req, runtime.clone(), timeout).await {
+            match runtime
+                .background_tasks
+                .create_agent_task(req, runtime.clone(), timeout)
+                .await
+            {
                 Ok(task) => {
                     return crate::soul::message::ToolReturnValue::Ok {
                         output: format!("Background agent started.\ntask_id: {}", task.id),
@@ -195,7 +214,8 @@ impl crate::soul::toolset::Tool for Agent {
 
         let result = if let Some(t) = timeout {
             let t = t.min(MAX_FOREGROUND_TIMEOUT);
-            match tokio::time::timeout(tokio::time::Duration::from_secs(t), runner.run(&req)).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(t), runner.run(&req)).await
+            {
                 Ok(r) => r,
                 Err(_) => crate::soul::message::ToolReturnValue::Error {
                     error: format!("Agent timed out after {t}s."),

@@ -18,10 +18,7 @@ pub struct ForegroundSubagentRunner {
 
 impl ForegroundSubagentRunner {
     pub fn new(runtime: crate::soul::agent::Runtime) -> Self {
-        let store = runtime
-            .subagent_store
-            .clone()
-            .unwrap_or_default();
+        let store = runtime.subagent_store.clone().unwrap_or_default();
         let builder = crate::subagents::builder::SubagentBuilder::new(runtime.clone());
         Self {
             runtime,
@@ -31,10 +28,7 @@ impl ForegroundSubagentRunner {
     }
 
     #[tracing::instrument(level = "info", skip(self, req))]
-    pub async fn run(
-        &self,
-        req: &ForegroundRunRequest,
-    ) -> crate::soul::message::ToolReturnValue {
+    pub async fn run(&self, req: &ForegroundRunRequest) -> crate::soul::message::ToolReturnValue {
         match self.run_inner(req).await {
             Ok(output) => crate::soul::message::ToolReturnValue::Ok {
                 output,
@@ -46,11 +40,13 @@ impl ForegroundSubagentRunner {
         }
     }
 
-    async fn run_inner(
-        &self,
-        req: &ForegroundRunRequest,
-    ) -> Result<String, (String, String)> {
+    async fn run_inner(&self, req: &ForegroundRunRequest) -> Result<String, (String, String)> {
         let (agent_id, actual_type, resumed) = self.prepare_instance(req).await?;
+
+        let output_path = self.store.output_path(&agent_id);
+        let mut output_writer =
+            crate::subagents::output::SubagentOutputWriter::new(output_path, vec![]);
+        let _ = output_writer.stage("runner_started");
 
         let labor_market = self.runtime.labor_market.read().await;
         let type_def = labor_market
@@ -75,14 +71,10 @@ impl ForegroundSubagentRunner {
             resumed,
         };
 
-        let (mut soul, prompt) = crate::subagents::core::prepare_soul(
-            &spec,
-            &self.runtime,
-            &self.builder,
-            &self.store,
-        )
-        .await
-        .map_err(|e| (e.to_string(), "Failed to prepare subagent".into()))?;
+        let (mut soul, prompt) =
+            crate::subagents::core::prepare_soul(&spec, &self.runtime, &self.builder, &self.store)
+                .await
+                .map_err(|e| (e.to_string(), "Failed to prepare subagent".into()))?;
 
         self.store
             .update_instance(
@@ -94,6 +86,7 @@ impl ForegroundSubagentRunner {
             .ok();
 
         let parts = vec![crate::soul::message::ContentPart::Text { text: prompt }];
+        let _ = output_writer.stage("run_soul_start");
         let outcome = soul.run(parts, None).await;
 
         match outcome {
@@ -102,6 +95,23 @@ impl ForegroundSubagentRunner {
                     .final_message
                     .map(|m| m.extract_text(""))
                     .unwrap_or_default();
+                let _ = output_writer.stage("run_soul_finished");
+                if final_message.trim().is_empty() {
+                    let _ = output_writer.stage("failed: empty output");
+                    self.store
+                        .update_instance(
+                            &agent_id,
+                            Some(crate::subagents::models::SubagentStatus::Failed),
+                            None,
+                            None,
+                        )
+                        .ok();
+                    return Err((
+                        "Agent completed but produced no output.".into(),
+                        "Empty agent output".into(),
+                    ));
+                }
+                let _ = output_writer.summary(&final_message);
                 self.store
                     .update_instance(
                         &agent_id,
@@ -120,11 +130,16 @@ impl ForegroundSubagentRunner {
                     final_message,
                 ];
                 if resumed && !req.requested_type.is_empty() && req.requested_type != actual_type {
-                    lines.insert(2, format!("requested_subagent_type: {}", req.requested_type));
+                    lines.insert(
+                        2,
+                        format!("requested_subagent_type: {}", req.requested_type),
+                    );
                 }
                 Ok(lines.join("\n"))
             }
             Err(e) => {
+                let _ = output_writer.stage("failed_exception");
+                let _ = output_writer.error(&e.to_string());
                 self.store
                     .update_instance(
                         &agent_id,
@@ -169,7 +184,10 @@ impl ForegroundSubagentRunner {
             req.requested_type.clone()
         };
 
-        let agent_id = format!("a{}", &uuid::Uuid::new_v4().to_string().replace("-", "")[..8]);
+        let agent_id = format!(
+            "a{}",
+            &uuid::Uuid::new_v4().to_string().replace("-", "")[..8]
+        );
         self.store.create_instance(
             &agent_id,
             &req.description,

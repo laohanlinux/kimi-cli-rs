@@ -71,15 +71,15 @@ pub fn load_agent_spec(agent_file: &Path) -> crate::error::Result<ResolvedAgentS
             "Agent spec extension should be recursively resolved".into(),
         ));
     }
-    let name = spec.name.ok_or_else(|| {
-        crate::error::KimiCliError::Config("Agent name is required".into())
-    })?;
+    let name = spec
+        .name
+        .ok_or_else(|| crate::error::KimiCliError::Config("Agent name is required".into()))?;
     let system_prompt_path = spec.system_prompt_path.ok_or_else(|| {
         crate::error::KimiCliError::Config("System prompt path is required".into())
     })?;
-    let tools = spec.tools.ok_or_else(|| {
-        crate::error::KimiCliError::Config("Tools are required".into())
-    })?;
+    let tools = spec
+        .tools
+        .ok_or_else(|| crate::error::KimiCliError::Config("Tools are required".into()))?;
     if spec.allowed_tools.is_none() {
         spec.allowed_tools = None;
     }
@@ -127,14 +127,19 @@ fn _load_agent_spec(agent_file: &Path) -> crate::error::Result<AgentSpec> {
         ));
     }
     let mut spec: AgentSpec = serde_yaml::from_value(
-        data.get("agent").cloned().unwrap_or(serde_yaml::Value::Null),
+        data.get("agent")
+            .cloned()
+            .unwrap_or(serde_yaml::Value::Null),
     )?;
 
     if let Some(ref mut path) = spec.system_prompt_path {
         *path = agent_file.parent().unwrap_or(Path::new(".")).join(&*path);
     }
     for subagent in spec.subagents.values_mut() {
-        subagent.path = agent_file.parent().unwrap_or(Path::new(".")).join(&subagent.path);
+        subagent.path = agent_file
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(&subagent.path);
     }
 
     if let Some(ref extend) = spec.extend {

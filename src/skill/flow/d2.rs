@@ -25,10 +25,8 @@ pub fn parse_d2_flowchart(text: &str) -> Result<Flow, FlowError> {
         }
     }
 
-    let mut flow_nodes: HashMap<String, FlowNode> = nodes
-        .into_iter()
-        .map(|(k, v)| (k, v.node))
-        .collect();
+    let mut flow_nodes: HashMap<String, FlowNode> =
+        nodes.into_iter().map(|(k, v)| (k, v.node)).collect();
 
     for node_id in flow_nodes.keys() {
         outgoing.entry(node_id.clone()).or_default();
@@ -88,7 +86,10 @@ fn normalize_markdown_blocks(text: &str) -> Result<String, FlowError> {
             line_no += 1;
         }
         if i >= lines.len() {
-            return Err(FlowError::new(line_error(start_line, "Unclosed markdown block")));
+            return Err(FlowError::new(line_error(
+                start_line,
+                "Unclosed markdown block",
+            )));
         }
 
         let dedented = dedent_block(&block_lines);
@@ -110,7 +111,7 @@ fn strip_unquoted_comment(text: &str) -> String {
     let mut in_single = false;
     let mut in_double = false;
     let mut escape = false;
-    for (idx, ch) in text.chars().enumerate() {
+    for (bidx, ch) in text.char_indices() {
         if escape {
             escape = false;
             continue;
@@ -128,7 +129,7 @@ fn strip_unquoted_comment(text: &str) -> String {
             continue;
         }
         if ch == '#' && !in_single && !in_double {
-            return text[..idx].to_string();
+            return text[..bidx].to_string();
         }
     }
     text.to_string()
@@ -333,10 +334,16 @@ fn parse_edge_statement(
         return Ok(());
     }
     if node_ids.len() < 2 {
-        return Err(FlowError::new(line_error(line_no, "Edge must have at least two nodes")));
+        return Err(FlowError::new(line_error(
+            line_no,
+            "Edge must have at least two nodes",
+        )));
     }
 
-    let label = edge_label.as_ref().map(|l| parse_label(l, line_no)).transpose()?;
+    let label = edge_label
+        .as_ref()
+        .map(|l| parse_label(l, line_no))
+        .transpose()?;
     for idx in 0..node_ids.len() - 1 {
         let edge_label = if idx == node_ids.len() - 2 {
             label.clone()
@@ -382,7 +389,11 @@ fn parse_node_statement(
     Ok(())
 }
 
-fn parse_node_id(text: &str, line_no: usize, allow_inline_label: bool) -> Result<String, FlowError> {
+fn parse_node_id(
+    text: &str,
+    line_no: usize,
+    allow_inline_label: bool,
+) -> Result<String, FlowError> {
     let cleaned = text.trim();
     let cleaned = if allow_inline_label {
         split_unquoted_once(cleaned, ":").0.to_string()
@@ -409,18 +420,42 @@ fn is_property_path(node_id: &str) -> bool {
     }
     let parts: Vec<&str> = node_id.split('.').filter(|p| !p.is_empty()).collect();
     let property_segments = [
-        "shape", "style", "label", "link", "icon", "near", "width", "height",
-        "direction", "grid-rows", "grid-columns", "grid-gap", "font-size",
-        "font-family", "font-color", "stroke", "fill", "opacity", "padding",
-        "border-radius", "shadow", "sketch", "animated", "multiple",
-        "constraint", "tooltip",
+        "shape",
+        "style",
+        "label",
+        "link",
+        "icon",
+        "near",
+        "width",
+        "height",
+        "direction",
+        "grid-rows",
+        "grid-columns",
+        "grid-gap",
+        "font-size",
+        "font-family",
+        "font-color",
+        "stroke",
+        "fill",
+        "opacity",
+        "padding",
+        "border-radius",
+        "shadow",
+        "sketch",
+        "animated",
+        "multiple",
+        "constraint",
+        "tooltip",
     ];
     for part in &parts[1..] {
         if property_segments.contains(part) || part.starts_with("style") {
             return true;
         }
     }
-    parts.last().map(|p| property_segments.contains(p)).unwrap_or(false)
+    parts
+        .last()
+        .map(|p| property_segments.contains(p))
+        .unwrap_or(false)
 }
 
 fn parse_label(text: &str, line_no: usize) -> Result<String, FlowError> {
@@ -456,7 +491,10 @@ fn parse_quoted_label(text: &str, line_no: usize) -> Result<String, FlowError> {
         if ch == quote {
             let trailing = text[i + 1..].trim();
             if !trailing.is_empty() {
-                return Err(FlowError::new(line_error(line_no, "Unexpected trailing content")));
+                return Err(FlowError::new(line_error(
+                    line_no,
+                    "Unexpected trailing content",
+                )));
             }
             return Ok(buf);
         }
@@ -470,7 +508,7 @@ fn split_unquoted_once(text: &str, token: &str) -> (String, Option<String>) {
     let mut in_single = false;
     let mut in_double = false;
     let mut escape = false;
-    for (idx, ch) in text.chars().enumerate() {
+    for (bidx, ch) in text.char_indices() {
         if escape {
             escape = false;
             continue;
@@ -487,8 +525,12 @@ fn split_unquoted_once(text: &str, token: &str) -> (String, Option<String>) {
             in_double = !in_double;
             continue;
         }
-        if ch.to_string() == token && !in_single && !in_double {
-            return (text[..idx].trim().to_string(), Some(text[idx + token.len()..].trim().to_string()));
+        if !in_single && !in_double && text[bidx..].starts_with(token) {
+            let end = bidx + token.len();
+            return (
+                text[..bidx].trim().to_string(),
+                Some(text[end..].trim().to_string()),
+            );
         }
     }
     (text.trim().to_string(), None)
@@ -504,7 +546,10 @@ fn add_node(
     let label = label.unwrap_or_else(|| node_id.to_string());
     let label_norm = label.trim().to_lowercase();
     if label_norm.is_empty() {
-        return Err(FlowError::new(line_error(line_no, "Node label cannot be empty")));
+        return Err(FlowError::new(line_error(
+            line_no,
+            "Node label cannot be empty",
+        )));
     }
 
     let kind = if label_norm == "begin" {
@@ -529,7 +574,13 @@ fn add_node(
             return Ok(existing.node.clone());
         }
         if explicit && !existing.explicit {
-            nodes.insert(node_id.to_string(), NodeDef { node: node.clone(), explicit: true });
+            nodes.insert(
+                node_id.to_string(),
+                NodeDef {
+                    node: node.clone(),
+                    explicit: true,
+                },
+            );
             return Ok(node);
         }
         return Err(FlowError::new(line_error(
@@ -538,7 +589,13 @@ fn add_node(
         )));
     }
 
-    nodes.insert(node_id.to_string(), NodeDef { node: node.clone(), explicit });
+    nodes.insert(
+        node_id.to_string(),
+        NodeDef {
+            node: node.clone(),
+            explicit,
+        },
+    );
     Ok(node)
 }
 
@@ -549,7 +606,9 @@ fn infer_decision_nodes(
     let mut updated = HashMap::new();
     for (node_id, node) in nodes {
         let mut kind = node.kind.clone();
-        if matches!(kind, FlowNodeKind::Task) && outgoing.get(&node_id).map(|v| v.len()).unwrap_or(0) > 1 {
+        if matches!(kind, FlowNodeKind::Task)
+            && outgoing.get(&node_id).map(|v| v.len()).unwrap_or(0) > 1
+        {
             kind = FlowNodeKind::Decision;
         }
         if kind != node.kind {

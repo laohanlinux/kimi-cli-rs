@@ -124,7 +124,11 @@ impl PluginManager {
                 Err(e) => {
                     results.push(PluginLoadResult {
                         manifest_path: manifest_path.clone(),
-                        plugin_name: manifest_path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
+                        plugin_name: manifest_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
                         tools_loaded: 0,
                         error: Some(format!("Failed to read manifest: {e}")),
                     });
@@ -144,7 +148,11 @@ impl PluginManager {
                 Err(e) => {
                     results.push(PluginLoadResult {
                         manifest_path: manifest_path.clone(),
-                        plugin_name: manifest_path.file_stem().unwrap_or_default().to_string_lossy().to_string(),
+                        plugin_name: manifest_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
                         tools_loaded: 0,
                         error: Some(format!("Failed to parse manifest: {e}")),
                     });
@@ -176,7 +184,10 @@ mod tests {
     fn plugin_manager_load_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mut mgr = PluginManager::new(tmp.path().to_path_buf());
-        let tools = mgr.load(&crate::config::Config::default(), &crate::soul::approval::Approval::default());
+        let tools = mgr.load(
+            &crate::config::Config::default(),
+            &crate::soul::approval::Approval::default(),
+        );
         assert!(tools.is_empty());
         assert!(mgr.load_results().is_empty());
     }
@@ -185,8 +196,14 @@ mod tests {
     fn plugin_manager_reload_clears_previous() {
         let tmp = tempfile::tempdir().unwrap();
         let mut mgr = PluginManager::new(tmp.path().to_path_buf());
-        let _ = mgr.load(&crate::config::Config::default(), &crate::soul::approval::Approval::default());
-        let _ = mgr.reload(&crate::config::Config::default(), &crate::soul::approval::Approval::default());
+        let _ = mgr.load(
+            &crate::config::Config::default(),
+            &crate::soul::approval::Approval::default(),
+        );
+        let _ = mgr.reload(
+            &crate::config::Config::default(),
+            &crate::soul::approval::Approval::default(),
+        );
         assert!(mgr.tools().is_empty());
     }
 }

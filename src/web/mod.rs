@@ -2,7 +2,6 @@ pub mod api;
 pub mod runner;
 pub mod store;
 
-
 /// Axum web server for the agent.
 #[derive(Debug, Clone, Default)]
 pub struct WebServer {
@@ -24,13 +23,18 @@ impl WebServer {
             .with_state(state.clone())
             .route("/", axum::routing::get(|| async { "Kimi CLI Web Server" }));
 
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", self.port))
-            .await
-            .map_err(|e| crate::error::KimiCliError::Io(e))?;
-        tracing::info!("Web server listening on port {}", self.port);
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| crate::error::KimiCliError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        const MAX_PORT_ATTEMPTS: u32 = 10;
+        let listener =
+            crate::utils::server::bind_tcp_listener("127.0.0.1", self.port, MAX_PORT_ATTEMPTS)
+                .await
+                .map_err(crate::error::KimiCliError::Io)?;
+        let addr = listener
+            .local_addr()
+            .map_err(crate::error::KimiCliError::Io)?;
+        tracing::info!("{}", crate::utils::server::format_url_for_addr(addr));
+        axum::serve(listener, app).await.map_err(|e| {
+            crate::error::KimiCliError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
         Ok(())
     }
 }

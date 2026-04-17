@@ -22,7 +22,10 @@ pub async fn load_transcript(session_dir: &Path) -> crate::error::Result<Vec<Rep
     Ok(v)
 }
 
-pub async fn save_transcript(session_dir: &Path, messages: &[ReplMessage]) -> crate::error::Result<()> {
+pub async fn save_transcript(
+    session_dir: &Path,
+    messages: &[ReplMessage],
+) -> crate::error::Result<()> {
     let path = transcript_path(session_dir);
     let tmp = path.with_extension("json.tmp");
     let raw = serde_json::to_string_pretty(messages)?;

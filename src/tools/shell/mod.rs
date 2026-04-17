@@ -49,7 +49,10 @@ impl crate::soul::toolset::Tool for Shell {
         arguments: serde_json::Value,
         runtime: &crate::soul::agent::Runtime,
     ) -> crate::soul::message::ToolReturnValue {
-        let command = arguments.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let command = arguments
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if command.is_empty() {
             return crate::soul::message::ToolReturnValue::Error {
                 error: "Command cannot be empty.".into(),
@@ -79,8 +82,7 @@ impl crate::soul::toolset::Tool for Shell {
                             task.command, task.id
                         ),
                         message: Some(
-                            "Use TaskOutput to check progress or TaskList to see all tasks."
-                                .into(),
+                            "Use TaskOutput to check progress or TaskList to see all tasks.".into(),
                         ),
                     };
                 }
@@ -107,14 +109,19 @@ impl crate::soul::toolset::Tool for Shell {
             vec!["-c", command]
         };
 
-        let mut child = match tokio::process::Command::new(&self.shell_path)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-        {
+        let mut child = match {
+            let mut cmd = tokio::process::Command::new(&self.shell_path);
+            crate::utils::subprocess_env::apply_to_tokio(
+                &mut cmd,
+                crate::utils::subprocess_env::get_clean_env(),
+            );
+            cmd.args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+        } {
             Ok(c) => c,
             Err(e) => {
                 return crate::soul::message::ToolReturnValue::Error {
@@ -150,7 +157,8 @@ impl crate::soul::toolset::Tool for Shell {
             out
         });
 
-        let result = tokio::time::timeout(tokio::time::Duration::from_secs(timeout), child.wait()).await;
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(timeout), child.wait()).await;
         let (stdout_text, stderr_text) = match (stdout_handle.await, stderr_handle.await) {
             (Ok(o), Ok(e)) => (o, e),
             _ => (String::new(), String::new()),
@@ -215,8 +223,9 @@ mod tests {
         let shell = Shell::default();
         let rt = crate::soul::agent::Runtime::default();
         let result = shell.call(serde_json::json!({"command": ""}), &rt).await;
-        assert!(
-            matches!(result, crate::soul::message::ToolReturnValue::Error { .. })
-        );
+        assert!(matches!(
+            result,
+            crate::soul::message::ToolReturnValue::Error { .. }
+        ));
     }
 }

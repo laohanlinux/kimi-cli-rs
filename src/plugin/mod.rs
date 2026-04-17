@@ -97,11 +97,12 @@ impl crate::soul::toolset::Tool for PluginTool {
     ) -> crate::soul::message::ToolReturnValue {
         let command = self.build_command(&arguments);
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let output = tokio::process::Command::new(&shell)
-            .arg("-c")
-            .arg(&command)
-            .output()
-            .await;
+        let mut cmd = tokio::process::Command::new(&shell);
+        crate::utils::subprocess_env::apply_to_tokio(
+            &mut cmd,
+            crate::utils::subprocess_env::get_clean_env(),
+        );
+        let output = cmd.arg("-c").arg(&command).output().await;
 
         match output {
             Ok(out) => {
@@ -120,7 +121,10 @@ impl crate::soul::toolset::Tool for PluginTool {
                     }
                 } else {
                     crate::soul::message::ToolReturnValue::Error {
-                        error: format!("Plugin tool exited with code {:?}:\n{text}", out.status.code()),
+                        error: format!(
+                            "Plugin tool exited with code {:?}:\n{text}",
+                            out.status.code()
+                        ),
                     }
                 }
             }
@@ -174,7 +178,11 @@ pub fn load_plugin_tools(
         let text = match std::fs::read_to_string(&manifest_path) {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!("Failed to read plugin manifest {}: {}", manifest_path.display(), e);
+                tracing::warn!(
+                    "Failed to read plugin manifest {}: {}",
+                    manifest_path.display(),
+                    e
+                );
                 continue;
             }
         };
@@ -182,7 +190,11 @@ pub fn load_plugin_tools(
         let manifest: PluginManifest = match toml::from_str(&text) {
             Ok(m) => m,
             Err(e) => {
-                tracing::warn!("Failed to parse plugin manifest {}: {}", manifest_path.display(), e);
+                tracing::warn!(
+                    "Failed to parse plugin manifest {}: {}",
+                    manifest_path.display(),
+                    e
+                );
                 continue;
             }
         };

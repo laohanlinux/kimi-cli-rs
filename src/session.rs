@@ -40,7 +40,11 @@ impl Session {
         let text = match std::fs::read_to_string(&self.context_file) {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!("Failed to read context file {}: {}", self.context_file.display(), e);
+                tracing::warn!(
+                    "Failed to read context file {}: {}",
+                    self.context_file.display(),
+                    e
+                );
                 return true;
             }
         };
@@ -58,7 +62,11 @@ impl Session {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to parse context line in {}: {}", self.context_file.display(), e);
+                    tracing::warn!(
+                        "Failed to parse context line in {}: {}",
+                        self.context_file.display(),
+                        e
+                    );
                     continue;
                 }
             }
@@ -133,7 +141,11 @@ pub async fn create(
     let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let canonical_str = canonical.to_string_lossy().to_string();
 
-    if let Some(pos) = metadata.work_dirs.iter().position(|wd| wd.path == canonical_str) {
+    if let Some(pos) = metadata
+        .work_dirs
+        .iter()
+        .position(|wd| wd.path == canonical_str)
+    {
         metadata.work_dirs[pos].last_session_id = Some(session_id.clone());
     } else {
         metadata.work_dirs.push(crate::metadata::WorkDirMeta {
@@ -142,7 +154,12 @@ pub async fn create(
             last_session_id: Some(session_id.clone()),
         });
     }
-    let work_dir_meta = metadata.work_dirs.iter().find(|wd| wd.path == canonical_str).unwrap().clone();
+    let work_dir_meta = metadata
+        .work_dirs
+        .iter()
+        .find(|wd| wd.path == canonical_str)
+        .unwrap()
+        .clone();
 
     let session_dir = work_dir_meta.sessions_dir().join(&session_id);
     std::fs::create_dir_all(&session_dir)?;
@@ -232,9 +249,19 @@ pub async fn list(work_dir: PathBuf) -> Vec<Session> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            session_ids.insert(path.file_name().unwrap_or_default().to_string_lossy().to_string());
+            session_ids.insert(
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            );
         } else if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-            session_ids.insert(path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+            session_ids.insert(
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
     }
 
@@ -295,8 +322,13 @@ pub async fn continue_(work_dir: PathBuf) -> Option<Session> {
 
 /// Migrates legacy flat context files into session directories.
 fn migrate_session_context_file(work_dir_meta: &crate::metadata::WorkDirMeta, session_id: &str) {
-    let old_context_file = work_dir_meta.sessions_dir().join(format!("{session_id}.jsonl"));
-    let new_context_file = work_dir_meta.sessions_dir().join(session_id).join("context.jsonl");
+    let old_context_file = work_dir_meta
+        .sessions_dir()
+        .join(format!("{session_id}.jsonl"));
+    let new_context_file = work_dir_meta
+        .sessions_dir()
+        .join(session_id)
+        .join("context.jsonl");
     if old_context_file.exists() && !new_context_file.exists() {
         if let Some(parent) = new_context_file.parent() {
             let _ = std::fs::create_dir_all(parent);

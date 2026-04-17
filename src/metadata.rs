@@ -20,7 +20,10 @@ impl WorkDirMeta {
         } else {
             format!("{}_{}", self.kaos, hash)
         };
-        crate::share::get_share_dir().unwrap().join("sessions").join(dir_basename)
+        crate::share::get_share_dir()
+            .unwrap()
+            .join("sessions")
+            .join(dir_basename)
     }
 }
 
@@ -35,17 +38,17 @@ impl Metadata {
     /// Finds metadata for the given work directory.
     pub fn get_work_dir_meta(&self, path: &PathBuf) -> Option<&WorkDirMeta> {
         let canonical = dunce::canonicalize(path).ok()?;
-        self.work_dirs.iter().find(|wd| {
-            dunce::canonicalize(&wd.path).ok() == Some(canonical.clone())
-        })
+        self.work_dirs
+            .iter()
+            .find(|wd| dunce::canonicalize(&wd.path).ok() == Some(canonical.clone()))
     }
 
     /// Mutable access to work directory metadata.
     pub fn get_work_dir_meta_mut(&mut self, path: &PathBuf) -> Option<&mut WorkDirMeta> {
         let canonical = dunce::canonicalize(path).ok()?;
-        self.work_dirs.iter_mut().find(|wd| {
-            dunce::canonicalize(&wd.path).ok() == Some(canonical.clone())
-        })
+        self.work_dirs
+            .iter_mut()
+            .find(|wd| dunce::canonicalize(&wd.path).ok() == Some(canonical.clone()))
     }
 
     /// Creates a new entry for a work directory.

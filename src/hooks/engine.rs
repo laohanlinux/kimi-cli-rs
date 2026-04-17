@@ -75,15 +75,16 @@ impl HookEngine {
         }
 
         // Simple command execution via shell.
+        let mut hook_env = crate::utils::subprocess_env::get_clean_env();
+        hook_env.insert("KIMI_HOOK_EVENT".into(), hook.event.clone());
+        hook_env.insert("KIMI_HOOK_TOOL".into(), tool_name.to_string());
+        hook_env.insert("KIMI_HOOK_ARGS".into(), arguments.to_string());
+        let mut hook_cmd = tokio::process::Command::new("sh");
+        crate::utils::subprocess_env::apply_to_tokio(&mut hook_cmd, hook_env);
+        hook_cmd.arg("-c").arg(cmd);
         let output = tokio::time::timeout(
             tokio::time::Duration::from_secs(hook.timeout),
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(cmd)
-                .env("KIMI_HOOK_EVENT", &hook.event)
-                .env("KIMI_HOOK_TOOL", tool_name)
-                .env("KIMI_HOOK_ARGS", arguments.to_string())
-                .output(),
+            hook_cmd.output(),
         )
         .await
         .map_err(|_| crate::error::KimiCliError::Generic("hook command timed out".into()))?
@@ -133,7 +134,8 @@ mod tests {
     #[test]
     fn hook_engine_default_allows() {
         let engine = HookEngine::default();
-        let rt = tokio_test::block_on(engine.trigger("PreToolUse", "Shell", serde_json::Value::Null));
+        let rt =
+            tokio_test::block_on(engine.trigger("PreToolUse", "Shell", serde_json::Value::Null));
         assert!(matches!(rt.unwrap(), HookAction::Allow));
     }
 
@@ -145,7 +147,8 @@ mod tests {
             matcher: Some("Shell".into()),
             timeout: 30,
         }]);
-        let rt = tokio_test::block_on(engine.trigger("PreToolUse", "Shell", serde_json::Value::Null));
+        let rt =
+            tokio_test::block_on(engine.trigger("PreToolUse", "Shell", serde_json::Value::Null));
         assert!(matches!(rt.unwrap(), HookAction::Block { .. }));
     }
 
@@ -157,7 +160,11 @@ mod tests {
             matcher: Some("ReadFile".into()),
             timeout: 30,
         }]);
-        let rt = tokio_test::block_on(engine.trigger("PostToolUse", "ReadFile", serde_json::Value::Null));
+        let rt = tokio_test::block_on(engine.trigger(
+            "PostToolUse",
+            "ReadFile",
+            serde_json::Value::Null,
+        ));
         assert!(matches!(rt.unwrap(), HookAction::Block { .. }));
     }
 }

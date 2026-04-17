@@ -90,14 +90,12 @@ pub async fn discover_skills(skills_dir: &Path) -> Vec<Skill> {
             continue;
         }
         match tokio::fs::read_to_string(&skill_md).await {
-            Ok(content) => {
-                match parse_skill_text(&content, &path) {
-                    Ok(skill) => skills.push(skill),
-                    Err(e) => {
-                        tracing::warn!("Skipping invalid skill at {}: {}", skill_md.display(), e);
-                    }
+            Ok(content) => match parse_skill_text(&content, &path) {
+                Ok(skill) => skills.push(skill),
+                Err(e) => {
+                    tracing::warn!("Skipping invalid skill at {}: {}", skill_md.display(), e);
                 }
-            }
+            },
             Err(e) => {
                 tracing::warn!("Failed to read skill file {}: {}", skill_md.display(), e);
             }
@@ -129,7 +127,11 @@ pub async fn read_skill_text(skill: &Skill) -> Option<String> {
     match tokio::fs::read_to_string(skill.skill_md_file()).await {
         Ok(text) => Some(text.trim().to_string()),
         Err(e) => {
-            tracing::warn!("Failed to read skill file {}: {}", skill.skill_md_file().display(), e);
+            tracing::warn!(
+                "Failed to read skill file {}: {}",
+                skill.skill_md_file().display(),
+                e
+            );
             None
         }
     }
@@ -174,7 +176,11 @@ pub fn parse_skill_text(content: &str, dir_path: &Path) -> crate::error::Result<
         match parse_flow_from_skill(content) {
             Ok(f) => flow = Some(f),
             Err(e) => {
-                tracing::error!("Failed to parse flow skill {}: {}. Falling back to standard.", name, e);
+                tracing::error!(
+                    "Failed to parse flow skill {}: {}. Falling back to standard.",
+                    name,
+                    e
+                );
                 skill_type = SkillType::Standard;
             }
         }
@@ -192,12 +198,16 @@ pub fn parse_skill_text(content: &str, dir_path: &Path) -> crate::error::Result<
 fn parse_flow_from_skill(content: &str) -> crate::error::Result<crate::skill::flow::Flow> {
     for (lang, code) in iter_fenced_codeblocks(content) {
         if lang == "mermaid" {
-            return crate::skill::flow::mermaid::parse_mermaid_flowchart(&code)
-                .map_err(|e| crate::error::KimiCliError::Generic(format!("Invalid mermaid flow diagram: {e}").into()));
+            return crate::skill::flow::mermaid::parse_mermaid_flowchart(&code).map_err(|e| {
+                crate::error::KimiCliError::Generic(
+                    format!("Invalid mermaid flow diagram: {e}").into(),
+                )
+            });
         }
         if lang == "d2" {
-            return crate::skill::flow::d2::parse_d2_flowchart(&code)
-                .map_err(|e| crate::error::KimiCliError::Generic(format!("Invalid d2 flow diagram: {e}").into()));
+            return crate::skill::flow::d2::parse_d2_flowchart(&code).map_err(|e| {
+                crate::error::KimiCliError::Generic(format!("Invalid d2 flow diagram: {e}").into())
+            });
         }
     }
     Err(crate::error::KimiCliError::Generic(
@@ -270,9 +280,14 @@ fn normalize_code_lang(info: &str) -> String {
     if info.is_empty() {
         return String::new();
     }
-    let lang = info.split_whitespace().next().unwrap_or("").trim().to_lowercase();
+    let lang = info
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
     if lang.starts_with('{') && lang.ends_with('}') {
-        lang[1..lang.len()-1].trim().to_string()
+        lang[1..lang.len() - 1].trim().to_string()
     } else {
         lang
     }

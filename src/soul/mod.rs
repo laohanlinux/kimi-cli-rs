@@ -43,11 +43,17 @@ pub struct StatusSnapshot {
 pub fn format_token_count(n: usize) -> String {
     if n >= 1_000_000 {
         let value = n as f64 / 1_000_000.0;
-        let compact = format!("{:.1}", value).trim_end_matches('0').trim_end_matches('.').to_string();
+        let compact = format!("{:.1}", value)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string();
         format!("{compact}m")
     } else if n >= 1_000 {
         let value = n as f64 / 1_000.0;
-        let compact = format!("{:.1}", value).trim_end_matches('0').trim_end_matches('.').to_string();
+        let compact = format!("{:.1}", value)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string();
         format!("{compact}k")
     } else {
         n.to_string()
@@ -55,7 +61,11 @@ pub fn format_token_count(n: usize) -> String {
 }
 
 /// Formats context status for the status bar.
-pub fn format_context_status(context_usage: f64, context_tokens: usize, max_context_tokens: usize) -> String {
+pub fn format_context_status(
+    context_usage: f64,
+    context_tokens: usize,
+    max_context_tokens: usize,
+) -> String {
     let bounded = context_usage.clamp(0.0, 1.0);
     let pct = format!("{:.1}", bounded * 100.0);
     if max_context_tokens > 0 {
@@ -72,7 +82,9 @@ pub fn format_context_status(context_usage: f64, context_tokens: usize, max_cont
 pub async fn run_soul(
     soul: &mut crate::soul::kimisoul::KimiSoul,
     user_input: Vec<crate::soul::message::ContentPart>,
-    ui_loop_fn: impl FnOnce(crate::wire::Wire) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    ui_loop_fn: impl FnOnce(
+        crate::wire::Wire,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
     cancel_event: tokio::sync::watch::Receiver<bool>,
     runtime: &crate::soul::agent::Runtime,
 ) -> crate::error::Result<TurnOutcome> {
@@ -127,9 +139,10 @@ pub async fn run_soul(
         Ok(_) => "complete",
         Err(_) => "error",
     };
-    wire.soul_side().send_merged(crate::wire::types::WireMessage::TurnEnd {
-        stop_reason: stop_tag.into(),
-    });
+    wire.soul_side()
+        .send_merged(crate::wire::types::WireMessage::TurnEnd {
+            stop_reason: stop_tag.into(),
+        });
 
     // Let the hub bridge drain in-flight events before we tear it down.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

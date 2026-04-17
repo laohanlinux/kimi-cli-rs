@@ -98,7 +98,8 @@ pub async fn load_agents_md(work_dir: &Path) -> Option<String> {
     }
 
     let mut remaining = AGENTS_MD_MAX_BYTES;
-    let mut budgeted: Vec<(PathBuf, String)> = vec![(PathBuf::new(), String::new()); discovered.len()];
+    let mut budgeted: Vec<(PathBuf, String)> =
+        vec![(PathBuf::new(), String::new()); discovered.len()];
     for i in (0..discovered.len()).rev() {
         let (path, content) = &discovered[i];
         let annotation = format!("<!-- From: {} -->\n", path.display());
@@ -113,7 +114,9 @@ pub async fn load_agents_md(work_dir: &Path) -> Option<String> {
         let encoded = content.as_bytes();
         let mut truncated = content.clone();
         if encoded.len() > remaining {
-            truncated = String::from_utf8_lossy(&encoded[..remaining]).trim().to_string();
+            truncated = String::from_utf8_lossy(&encoded[..remaining])
+                .trim()
+                .to_string();
             tracing::warn!("AGENTS.md truncated due to size limit: {}", path.display());
         }
         remaining -= truncated.len();
@@ -194,7 +197,9 @@ impl Default for Runtime {
             },
             denwa_renji: crate::soul::denwa_renji::DenwaRenji::default(),
             approval: crate::soul::approval::Approval::default(),
-            labor_market: Arc::new(tokio::sync::RwLock::new(crate::subagents::labor_market::LaborMarket::default())),
+            labor_market: Arc::new(tokio::sync::RwLock::new(
+                crate::subagents::labor_market::LaborMarket::default(),
+            )),
             environment: crate::utils::environment::Environment {
                 os_kind: "unknown".into(),
                 os_arch: "unknown".into(),
@@ -208,7 +213,9 @@ impl Default for Runtime {
             additional_dirs: Vec::new(),
             skills_dirs: Vec::new(),
             subagent_store: Some(crate::subagents::store::SubagentStore::new(&session)),
-            approval_runtime: Some(Arc::new(crate::approval_runtime::runtime::ApprovalRuntime::default())),
+            approval_runtime: Some(Arc::new(
+                crate::approval_runtime::runtime::ApprovalRuntime::default(),
+            )),
             root_wire_hub: Some(Arc::new(crate::wire::root_hub::RootWireHub::default())),
             subagent_id: None,
             subagent_type: None,
@@ -237,10 +244,8 @@ impl Runtime {
             crate::utils::environment::Environment::detect(),
         );
 
-        let skills_roots = crate::skill::resolve_skills_roots(
-            &work_dir,
-            skills_dirs.as_deref(),
-        ).await;
+        let skills_roots =
+            crate::skill::resolve_skills_roots(&work_dir, skills_dirs.as_deref()).await;
         let skills_roots_canonical: Vec<PathBuf> = skills_roots
             .iter()
             .map(|p| dunce::canonicalize(p).unwrap_or_else(|_| p.clone()))
@@ -323,7 +328,11 @@ impl Runtime {
 
         let approval_state = crate::soul::approval::ApprovalState::new(
             effective_yolo,
-            approval_state_arc.lock().unwrap().auto_approve_actions.clone(),
+            approval_state_arc
+                .lock()
+                .unwrap()
+                .auto_approve_actions
+                .clone(),
             Some(on_change),
         );
 
@@ -347,11 +356,17 @@ impl Runtime {
                 KIMI_SKILLS: skills_formatted,
                 KIMI_ADDITIONAL_DIRS_INFO: additional_dirs_info,
                 KIMI_OS: environment.os_kind.clone(),
-                KIMI_SHELL: format!("{} (`{}`)", environment.shell_name, environment.shell_path.display()),
+                KIMI_SHELL: format!(
+                    "{} (`{}`)",
+                    environment.shell_name,
+                    environment.shell_path.display()
+                ),
             },
             denwa_renji: crate::soul::denwa_renji::DenwaRenji::default(),
             approval: crate::soul::approval::Approval::new(false, Some(approval_state), None),
-            labor_market: Arc::new(tokio::sync::RwLock::new(crate::subagents::labor_market::LaborMarket::default())),
+            labor_market: Arc::new(tokio::sync::RwLock::new(
+                crate::subagents::labor_market::LaborMarket::default(),
+            )),
             environment,
             notifications: notifications.clone(),
             background_tasks: background_tasks.clone(),
@@ -362,7 +377,9 @@ impl Runtime {
                 .filter(|r| !crate::utils::path::is_within_directory(r, &work_dir))
                 .collect(),
             subagent_store: Some(crate::subagents::store::SubagentStore::default()),
-            approval_runtime: Some(Arc::new(crate::approval_runtime::runtime::ApprovalRuntime::default())),
+            approval_runtime: Some(Arc::new(
+                crate::approval_runtime::runtime::ApprovalRuntime::default(),
+            )),
             root_wire_hub: Some(Arc::new(crate::wire::root_hub::RootWireHub::default())),
             subagent_id: None,
             subagent_type: None,
@@ -455,7 +472,11 @@ pub async fn load_agent(
             tool_policy,
             supports_background: false,
         };
-        runtime.labor_market.write().await.add_builtin_type(type_def);
+        runtime
+            .labor_market
+            .write()
+            .await
+            .add_builtin_type(type_def);
     }
 
     let mut toolset = crate::soul::toolset::KimiToolset::new();
@@ -470,7 +491,9 @@ pub async fn load_agent(
     tool_deps.insert("LaborMarket".into(), serde_json::json!(null));
     tool_deps.insert("Environment".into(), serde_json::json!(null));
 
-    let mut tools = agent_spec.allowed_tools.unwrap_or_else(|| agent_spec.tools.clone());
+    let mut tools = agent_spec
+        .allowed_tools
+        .unwrap_or_else(|| agent_spec.tools.clone());
     if !agent_spec.exclude_tools.is_empty() {
         tracing::debug!("Excluding tools: {:?}", agent_spec.exclude_tools);
         tools.retain(|tool| !agent_spec.exclude_tools.contains(tool));
@@ -478,8 +501,14 @@ pub async fn load_agent(
     toolset.load_tools(&tools, tool_deps).await?;
 
     // Add the Agent tool if requested and not excluded.
-    if tools.contains(&"Agent".to_string()) && !agent_spec.exclude_tools.contains(&"Agent".to_string()) {
-        toolset.add(Arc::new(crate::tools::agent::Agent::new(runtime.clone()).await)).await;
+    if tools.contains(&"Agent".to_string())
+        && !agent_spec.exclude_tools.contains(&"Agent".to_string())
+    {
+        toolset
+            .add(Arc::new(
+                crate::tools::agent::Agent::new(runtime.clone()).await,
+            ))
+            .await;
     }
 
     let mut plugin_manager = crate::plugin::manager::PluginManager::default();
@@ -539,9 +568,7 @@ fn _load_system_prompt(
     builtin_args: &BuiltinSystemPromptArgs,
 ) -> crate::error::Result<String> {
     tracing::info!("Loading system prompt: {}", path.display());
-    let system_prompt = std::fs::read_to_string(path)?
-        .trim()
-        .to_string();
+    let system_prompt = std::fs::read_to_string(path)?.trim().to_string();
     tracing::debug!(
         "Substituting system prompt with builtin args: {:?}, spec args: {:?}",
         builtin_args,
@@ -557,21 +584,40 @@ fn _load_system_prompt(
 
     let mut combined: HashMap<String, String> = HashMap::new();
     combined.insert("KIMI_NOW".into(), builtin_args.KIMI_NOW.clone());
-    combined.insert("KIMI_WORK_DIR".into(), builtin_args.KIMI_WORK_DIR.to_string_lossy().to_string());
-    combined.insert("KIMI_WORK_DIR_LS".into(), builtin_args.KIMI_WORK_DIR_LS.clone());
+    combined.insert(
+        "KIMI_WORK_DIR".into(),
+        builtin_args.KIMI_WORK_DIR.to_string_lossy().to_string(),
+    );
+    combined.insert(
+        "KIMI_WORK_DIR_LS".into(),
+        builtin_args.KIMI_WORK_DIR_LS.clone(),
+    );
     combined.insert("KIMI_AGENTS_MD".into(), builtin_args.KIMI_AGENTS_MD.clone());
     combined.insert("KIMI_SKILLS".into(), builtin_args.KIMI_SKILLS.clone());
-    combined.insert("KIMI_ADDITIONAL_DIRS_INFO".into(), builtin_args.KIMI_ADDITIONAL_DIRS_INFO.clone());
+    combined.insert(
+        "KIMI_ADDITIONAL_DIRS_INFO".into(),
+        builtin_args.KIMI_ADDITIONAL_DIRS_INFO.clone(),
+    );
     combined.insert("KIMI_OS".into(), builtin_args.KIMI_OS.clone());
     combined.insert("KIMI_SHELL".into(), builtin_args.KIMI_SHELL.clone());
     for (k, v) in args {
         combined.insert(k.clone(), v.clone());
     }
 
-    let template = env.template_from_str(&converted)
-        .map_err(|e| crate::error::KimiCliError::SystemPromptTemplate(format!("Invalid system prompt template: {}: {}", path.display(), e)))?;
-    let rendered = template.render(combined)
-        .map_err(|e| crate::error::KimiCliError::SystemPromptTemplate(format!("Missing system prompt arg in {}: {}", path.display(), e)))?;
+    let template = env.template_from_str(&converted).map_err(|e| {
+        crate::error::KimiCliError::SystemPromptTemplate(format!(
+            "Invalid system prompt template: {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
+    let rendered = template.render(combined).map_err(|e| {
+        crate::error::KimiCliError::SystemPromptTemplate(format!(
+            "Missing system prompt arg in {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
 
     Ok(rendered)
 }

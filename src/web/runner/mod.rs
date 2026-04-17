@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 /// A running session worker handle.
 #[derive(Debug, Clone)]
@@ -83,7 +83,9 @@ impl WebRunner {
                 let parts = vec![crate::soul::message::ContentPart::Text { text: input }];
                 let wire_tx = wire_tx_clone.clone();
 
-                let ui_loop = move |wire: crate::wire::Wire| -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                let ui_loop = move |wire: crate::wire::Wire| -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = ()> + Send>,
+                > {
                     Box::pin(async move {
                         let mut ui_side = wire.ui_side();
                         while let Some(msg) = ui_side.recv().await {
@@ -97,7 +99,8 @@ impl WebRunner {
                         if let Some(msg) = outcome.final_message {
                             let text = msg.extract_text("");
                             if !text.is_empty() {
-                                let _ = wire_tx_clone.send(crate::wire::types::WireMessage::TextPart { text });
+                                let _ = wire_tx_clone
+                                    .send(crate::wire::types::WireMessage::TextPart { text });
                             }
                         }
                     }

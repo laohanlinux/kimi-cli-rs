@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use rmcp::{
-    transport::{ConfigureCommandExt, TokioChildProcess},
-    ServiceExt,
-};
+use rmcp::{ServiceExt, transport::TokioChildProcess};
 
 /// MCP client connection handle.
 pub struct McpConnection {
@@ -33,13 +30,11 @@ pub async fn connect_stdio(
     args: &[String],
     env: &HashMap<String, String>,
 ) -> crate::error::Result<McpConnection> {
-    let cmd = tokio::process::Command::new(command);
-    let cmd = cmd.configure(|c| {
-        c.args(args);
-        for (k, v) in env {
-            c.env(k, v);
-        }
-    });
+    let mut full_env = crate::utils::subprocess_env::get_clean_env();
+    full_env.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut cmd = tokio::process::Command::new(command);
+    cmd.args(args);
+    crate::utils::subprocess_env::apply_to_tokio(&mut cmd, full_env);
 
     let transport = TokioChildProcess::new(cmd)
         .map_err(|e| crate::error::KimiCliError::McpRuntime(format!("stdio transport: {e}")))?;
@@ -70,7 +65,10 @@ pub async fn connect_http(
 
     let mut config = StreamableHttpClientTransportConfig::with_uri(url);
     for (k, v) in headers {
-        if let (Ok(name), Ok(value)) = (k.parse::<http::HeaderName>(), v.parse::<http::HeaderValue>()) {
+        if let (Ok(name), Ok(value)) = (
+            k.parse::<http::HeaderName>(),
+            v.parse::<http::HeaderValue>(),
+        ) {
             config.custom_headers.insert(name, value);
         }
     }

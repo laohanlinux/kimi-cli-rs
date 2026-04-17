@@ -35,8 +35,11 @@ pub struct KimiToolset {
     hook_engine: Option<crate::hooks::engine::HookEngine>,
     deny_all: bool,
     mcp_servers: Arc<tokio::sync::RwLock<HashMap<String, crate::mcp::server::McpServerInfo>>>,
-    mcp_loading_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<crate::error::Result<()>>>>>,
-    deferred_mcp_load: Arc<tokio::sync::Mutex<Option<(Vec<crate::config::McpConfig>, crate::soul::agent::Runtime)>>>,
+    mcp_loading_task:
+        Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<crate::error::Result<()>>>>>,
+    deferred_mcp_load: Arc<
+        tokio::sync::Mutex<Option<(Vec<crate::config::McpConfig>, crate::soul::agent::Runtime)>>,
+    >,
     external_tools: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn Tool>>>>,
 }
 
@@ -103,7 +106,10 @@ impl std::fmt::Debug for KimiToolset {
 
 impl KimiToolset {
     pub async fn add(&self, tool: Arc<dyn Tool>) {
-        self.tools.write().await.insert(tool.name().to_string(), tool);
+        self.tools
+            .write()
+            .await
+            .insert(tool.name().to_string(), tool);
     }
 
     pub fn add_sync(&self, tool: Arc<dyn Tool>) {
@@ -122,7 +128,10 @@ impl KimiToolset {
 
     /// Registers an external tool (e.g. from the web UI).
     pub async fn register_external_tool(&self, name: &str, tool: Arc<dyn Tool>) {
-        self.external_tools.write().await.insert(name.to_string(), tool);
+        self.external_tools
+            .write()
+            .await
+            .insert(name.to_string(), tool);
     }
 
     pub async fn find(&self, name: &str) -> Option<Arc<dyn Tool>> {
@@ -145,16 +154,25 @@ impl KimiToolset {
                 "Glob" => self.add(Arc::new(crate::tools::file::Glob)).await,
                 "Grep" => self.add(Arc::new(crate::tools::file::Grep)).await,
                 "ReadMediaFile" => self.add(Arc::new(crate::tools::file::ReadMediaFile)).await,
-                "Shell" => self.add(Arc::new(crate::tools::shell::Shell::default())).await,
+                "Shell" => {
+                    self.add(Arc::new(crate::tools::shell::Shell::default()))
+                        .await
+                }
                 "SearchWeb" => self.add(Arc::new(crate::tools::web::SearchWeb)).await,
                 "FetchURL" => self.add(Arc::new(crate::tools::web::FetchUrl)).await,
-                "AskUserQuestion" => self.add(Arc::new(crate::tools::ask_user::AskUserQuestion)).await,
+                "AskUserQuestion" => {
+                    self.add(Arc::new(crate::tools::ask_user::AskUserQuestion))
+                        .await
+                }
                 "EnterPlanMode" => self.add(Arc::new(crate::tools::plan::EnterPlanMode)).await,
                 "ExitPlanMode" => self.add(Arc::new(crate::tools::plan::ExitPlanMode)).await,
                 "Think" => self.add(Arc::new(crate::tools::think::Think)).await,
                 "SetTodoList" => self.add(Arc::new(crate::tools::todo::SetTodoList)).await,
                 "SendDMail" => self.add(Arc::new(crate::tools::dmail::SendDMail)).await,
-                "TaskOutput" => self.add(Arc::new(crate::tools::background::TaskOutput)).await,
+                "TaskOutput" => {
+                    self.add(Arc::new(crate::tools::background::TaskOutput))
+                        .await
+                }
                 "TaskList" => self.add(Arc::new(crate::tools::background::TaskList)).await,
                 "TaskStop" => self.add(Arc::new(crate::tools::background::TaskStop)).await,
                 "Agent" => {
@@ -227,38 +245,36 @@ impl KimiToolset {
                     let info = servers_guard.get_mut(&server_name).unwrap();
 
                     match conn_result {
-                        Ok(conn) => {
-                            match conn.peer.list_all_tools().await {
-                                Ok(tools) => {
-                                    let mut tool_names = Vec::new();
-                                    for tool in &tools {
-                                        let mcp_tool = crate::mcp::tool::McpTool::new(
-                                            server_name.clone(),
-                                            tool,
-                                            conn.peer.clone(),
-                                            timeout_ms,
-                                        );
-                                        tool_names.push(mcp_tool.name().to_string());
-                                        tools_map.write().await.insert(
-                                            mcp_tool.name().to_string(),
-                                            Arc::new(mcp_tool),
-                                        );
-                                    }
-                                    info.status = crate::mcp::server::McpServerStatus::Connected;
-                                    info.connection = Some(conn);
-                                    info.tool_names = tool_names;
-                                    tracing::info!("Connected MCP server: {server_name}");
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to list tools from MCP server: {server_name}, error: {e}"
+                        Ok(conn) => match conn.peer.list_all_tools().await {
+                            Ok(tools) => {
+                                let mut tool_names = Vec::new();
+                                for tool in &tools {
+                                    let mcp_tool = crate::mcp::tool::McpTool::new(
+                                        server_name.clone(),
+                                        tool,
+                                        conn.peer.clone(),
+                                        timeout_ms,
                                     );
-                                    info.status = crate::mcp::server::McpServerStatus::Failed;
-                                    conn.cancel();
-                                    failed.push(server_name.clone());
+                                    tool_names.push(mcp_tool.name().to_string());
+                                    tools_map
+                                        .write()
+                                        .await
+                                        .insert(mcp_tool.name().to_string(), Arc::new(mcp_tool));
                                 }
+                                info.status = crate::mcp::server::McpServerStatus::Connected;
+                                info.connection = Some(conn);
+                                info.tool_names = tool_names;
+                                tracing::info!("Connected MCP server: {server_name}");
                             }
-                        }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to list tools from MCP server: {server_name}, error: {e}"
+                                );
+                                info.status = crate::mcp::server::McpServerStatus::Failed;
+                                conn.cancel();
+                                failed.push(server_name.clone());
+                            }
+                        },
                         Err(e) => {
                             tracing::error!(
                                 "Failed to connect MCP server: {server_name}, error: {e}"
@@ -371,10 +387,7 @@ impl KimiToolset {
             })
             .collect();
 
-        let connected = snapshots
-            .iter()
-            .filter(|s| s.status == "connected")
-            .count();
+        let connected = snapshots.iter().filter(|s| s.status == "connected").count();
         let tools = snapshots.iter().map(|s| s.tools.len()).sum();
 
         Some(crate::mcp::server::McpStatusSnapshot {
@@ -387,7 +400,9 @@ impl KimiToolset {
     }
 
     /// Returns the underlying MCP server map.
-    pub fn mcp_servers(&self) -> Arc<tokio::sync::RwLock<HashMap<String, crate::mcp::server::McpServerInfo>>> {
+    pub fn mcp_servers(
+        &self,
+    ) -> Arc<tokio::sync::RwLock<HashMap<String, crate::mcp::server::McpServerInfo>>> {
         self.mcp_servers.clone()
     }
 
@@ -422,7 +437,8 @@ impl KimiToolset {
             return crate::soul::message::ToolResult {
                 tool_call_id: tool_call.id.clone(),
                 return_value: crate::soul::message::ToolReturnValue::Error {
-                    error: "Tool calls are disabled for side questions. Answer with text only.".into(),
+                    error: "Tool calls are disabled for side questions. Answer with text only."
+                        .into(),
                 },
             };
         }
@@ -456,7 +472,10 @@ impl KimiToolset {
                 "tool_call_id": tool_call.id,
                 "tool_input": args,
             });
-            match engine.trigger("PreToolUse", &tool_call.name, pre_data).await {
+            match engine
+                .trigger("PreToolUse", &tool_call.name, pre_data)
+                .await
+            {
                 Ok(crate::hooks::engine::HookAction::Block { reason }) => {
                     return crate::soul::message::ToolResult {
                         tool_call_id: tool_call.id.clone(),
@@ -470,9 +489,9 @@ impl KimiToolset {
         }
 
         let start = std::time::Instant::now();
-        let result = CURRENT_TOOL_CALL.scope(tool_call.clone(), async {
-            tool.call(args, runtime).await
-        }).await;
+        let result = CURRENT_TOOL_CALL
+            .scope(tool_call.clone(), async { tool.call(args, runtime).await })
+            .await;
         let elapsed = start.elapsed();
         tracing::info!(tool = %tool_call.name, ?elapsed, "tool executed");
 
@@ -481,22 +500,42 @@ impl KimiToolset {
             let engine = engine.clone();
             let name = tool_call.name.clone();
             let output_preview = match &result {
-                crate::soul::message::ToolReturnValue::Ok { output, .. } => output.chars().take(2000).collect::<String>(),
-                crate::soul::message::ToolReturnValue::Error { error } => error.chars().take(2000).collect::<String>(),
-                crate::soul::message::ToolReturnValue::Parts { parts } => {
-                    parts.iter().map(|p| match p {
+                crate::soul::message::ToolReturnValue::Ok { output, .. } => {
+                    output.chars().take(2000).collect::<String>()
+                }
+                crate::soul::message::ToolReturnValue::Error { error } => {
+                    error.chars().take(2000).collect::<String>()
+                }
+                crate::soul::message::ToolReturnValue::Parts { parts } => parts
+                    .iter()
+                    .map(|p| match p {
                         crate::soul::message::ContentPart::Text { text } => text.as_str(),
                         crate::soul::message::ContentPart::Think { thought } => thought.as_str(),
                         _ => "",
-                    }).collect::<String>().chars().take(2000).collect::<String>()
-                }
+                    })
+                    .collect::<String>()
+                    .chars()
+                    .take(2000)
+                    .collect::<String>(),
             };
             let is_error = matches!(result, crate::soul::message::ToolReturnValue::Error { .. });
             tokio::spawn(async move {
                 if is_error {
-                    let _ = engine.trigger("PostToolUseFailure", &name, serde_json::json!({"tool_output": output_preview})).await;
+                    let _ = engine
+                        .trigger(
+                            "PostToolUseFailure",
+                            &name,
+                            serde_json::json!({"tool_output": output_preview}),
+                        )
+                        .await;
                 }
-                let _ = engine.trigger("PostToolUse", &name, serde_json::json!({"tool_output": output_preview})).await;
+                let _ = engine
+                    .trigger(
+                        "PostToolUse",
+                        &name,
+                        serde_json::json!({"tool_output": output_preview}),
+                    )
+                    .await;
             });
         }
 

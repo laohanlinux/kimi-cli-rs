@@ -9,14 +9,21 @@ struct DirEntry {
     is_dir: bool,
 }
 
-async fn collect_entries(dir_path: &Path, max_width: usize) -> std::io::Result<(Vec<DirEntry>, usize)> {
+async fn collect_entries(
+    dir_path: &Path,
+    max_width: usize,
+) -> std::io::Result<(Vec<DirEntry>, usize)> {
     let mut entries = Vec::new();
     let mut total = 0usize;
     let mut read_dir = tokio::fs::read_dir(dir_path).await?;
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         total += 1;
         let name = entry.file_name().to_string_lossy().to_string();
-        let is_dir = entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false);
+        let is_dir = entry
+            .file_type()
+            .await
+            .map(|ft| ft.is_dir())
+            .unwrap_or(false);
         entries.push(DirEntry { name, is_dir });
     }
     entries.sort_by(|a, b| {
@@ -48,9 +55,16 @@ pub async fn list_directory(work_dir: &Path) -> String {
                     let child_remaining = child_total.saturating_sub(child_entries.len());
                     for (j, child) in child_entries.iter().enumerate() {
                         let child_is_last = (j == child_entries.len() - 1) && child_remaining == 0;
-                        let child_connector = if child_is_last { "└── " } else { "├── " };
+                        let child_connector = if child_is_last {
+                            "└── "
+                        } else {
+                            "├── "
+                        };
                         let suffix = if child.is_dir { "/" } else { "" };
-                        lines.push(format!("{child_prefix}{child_connector}{}{suffix}", child.name));
+                        lines.push(format!(
+                            "{child_prefix}{child_connector}{}{suffix}",
+                            child.name
+                        ));
                     }
                     if child_remaining > 0 {
                         lines.push(format!("{child_prefix}└── ... and {child_remaining} more"));

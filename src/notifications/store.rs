@@ -9,12 +9,17 @@ pub struct NotificationStore {
 impl NotificationStore {
     /// Creates a new notification store rooted at the given directory.
     pub fn new(dir: &Path) -> Self {
-        Self { dir: dir.to_path_buf() }
+        Self {
+            dir: dir.to_path_buf(),
+        }
     }
 
     /// Saves a notification record to disk.
     #[tracing::instrument(level = "debug", skip(self))]
-    pub fn save(&self, notification: &crate::notifications::manager::Notification) -> crate::error::Result<()> {
+    pub fn save(
+        &self,
+        notification: &crate::notifications::manager::Notification,
+    ) -> crate::error::Result<()> {
         let _ = std::fs::create_dir_all(&self.dir);
         let path = self.dir.join(format!("{}.json", uuid::Uuid::new_v4()));
         let text = serde_json::to_string_pretty(notification)?;

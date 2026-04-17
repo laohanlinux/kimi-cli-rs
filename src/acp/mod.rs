@@ -1,10 +1,10 @@
 use axum::{
+    Router,
     extract::State,
     response::Json,
     routing::{get, post},
-    Router,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -22,8 +22,6 @@ impl std::fmt::Debug for AcpState {
             .finish_non_exhaustive()
     }
 }
-
-
 
 /// ACP (Agent Control Protocol) server.
 #[derive(Debug, Clone)]
@@ -55,9 +53,9 @@ impl AcpServer {
             .await
             .map_err(|e| crate::error::KimiCliError::Io(e))?;
         tracing::info!("ACP server listening on port {}", self.port);
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| crate::error::KimiCliError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        axum::serve(listener, app).await.map_err(|e| {
+            crate::error::KimiCliError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
         Ok(())
     }
 }
@@ -85,10 +83,7 @@ struct RpcRequest {
     id: Option<Value>,
 }
 
-async fn rpc_handler(
-    State(state): State<AcpState>,
-    Json(req): Json<RpcRequest>,
-) -> Json<Value> {
+async fn rpc_handler(State(state): State<AcpState>, Json(req): Json<RpcRequest>) -> Json<Value> {
     let result = match req.method.as_str() {
         "initialize" => handle_initialize(&req).await,
         "tools/list" => handle_tools_list(&state, &req).await,

@@ -7,6 +7,4 @@ pub const NAME: &str = "Kimi Code CLI";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// User-Agent header sent with HTTP requests.
-pub static USER_AGENT: Lazy<String> = Lazy::new(|| {
-    format!("{NAME}/{VERSION}")
-});
+pub static USER_AGENT: Lazy<String> = Lazy::new(|| format!("{NAME}/{VERSION}"));

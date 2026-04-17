@@ -1,10 +1,12 @@
 //! Ported from `claude-code-rs/src/repl/mod.rs` (layout + widgets only).
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
-use ratatui::Frame;
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use super::input_state::InputState;
 use super::message::{ReplMessage, ReplMessageRole};
@@ -26,13 +28,22 @@ pub fn welcome_message() -> ReplMessage {
 
 pub fn draw_header(frame: &mut Frame, area: Rect, title: &str) {
     let header = Paragraph::new(title)
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     frame.render_widget(header, area);
 }
 
-pub fn draw_messages(frame: &mut Frame, area: Rect, messages: &[ReplMessage], scroll_offset: usize) {
+pub fn draw_messages(
+    frame: &mut Frame,
+    area: Rect,
+    messages: &[ReplMessage],
+    scroll_offset: usize,
+) {
     let mut lines: Vec<Line> = Vec::new();
 
     for message in messages {
@@ -41,7 +52,9 @@ pub fn draw_messages(frame: &mut Frame, area: Rect, messages: &[ReplMessage], sc
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     "You",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 )]));
                 for line in message.text.lines() {
                     lines.push(Line::from(line.to_string()));
@@ -51,7 +64,9 @@ pub fn draw_messages(frame: &mut Frame, area: Rect, messages: &[ReplMessage], sc
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     ASSISTANT_LABEL,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 )]));
                 for line in message.text.lines() {
                     lines.push(Line::from(line.to_string()));
@@ -61,7 +76,9 @@ pub fn draw_messages(frame: &mut Frame, area: Rect, messages: &[ReplMessage], sc
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     "System",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )]));
                 for line in message.text.lines() {
                     lines.push(Line::from(line.to_string()));
@@ -99,7 +116,7 @@ pub fn draw_input(frame: &mut Frame, area: Rect, input: &InputState, active: boo
     };
 
     let input_text = if input.content.is_empty() && active {
-        "输入…  Enter 发送 · Ctrl+C 停轮/退出".to_string()
+        "Type…  Enter to send · Ctrl+C cancel turn / exit".to_string()
     } else if input.content.is_empty() {
         String::new()
     } else {
@@ -148,7 +165,10 @@ pub fn draw_status_footer(
         Span::styled(work_dir, Style::default().fg(Color::Green)),
         Span::styled(run, Style::default().fg(Color::Yellow)),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/help Ctrl+H · PgUp/PgDn scroll", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "/help Ctrl+H · PgUp/PgDn scroll",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     let w = Paragraph::new(line);
     frame.render_widget(w, area);

@@ -26,7 +26,9 @@ impl OAuthManager {
     pub async fn get_token(&self, storage: &str, key: &str) -> crate::error::Result<SecretString> {
         match storage {
             "file" => {
-                let path = crate::share::get_share_dir()?.join("oauth").join(format!("{key}.token"));
+                let path = crate::share::get_share_dir()?
+                    .join("oauth")
+                    .join(format!("{key}.token"));
                 if !path.exists() {
                     return Ok(SecretString::new("".into()));
                 }
@@ -34,8 +36,9 @@ impl OAuthManager {
                 Ok(SecretString::new(text.trim().into()))
             }
             "keyring" => {
-                let entry = keyring::Entry::new("kimi-cli-rs", key)
-                    .map_err(|e| crate::error::KimiCliError::Generic(format!("keyring error: {e}")))?;
+                let entry = keyring::Entry::new("kimi-cli-rs", key).map_err(|e| {
+                    crate::error::KimiCliError::Generic(format!("keyring error: {e}"))
+                })?;
                 match entry.get_password() {
                     Ok(token) => Ok(SecretString::new(token.into())),
                     Err(keyring::Error::NoEntry) => Ok(SecretString::new("".into())),
@@ -53,7 +56,10 @@ impl OAuthManager {
     }
 
     /// Resolves an `OAuthRef` into a token.
-    pub async fn resolve(&self, oauth_ref: &crate::config::OAuthRef) -> crate::error::Result<SecretString> {
+    pub async fn resolve(
+        &self,
+        oauth_ref: &crate::config::OAuthRef,
+    ) -> crate::error::Result<SecretString> {
         self.get_token(&oauth_ref.storage, &oauth_ref.key).await
     }
 
@@ -83,7 +89,10 @@ impl OAuthManager {
 
     /// Ensures the OAuth token is fresh, refreshing if necessary.
     #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn ensure_fresh(&self, oauth_ref: Option<&crate::config::OAuthRef>) -> crate::error::Result<()> {
+    pub async fn ensure_fresh(
+        &self,
+        oauth_ref: Option<&crate::config::OAuthRef>,
+    ) -> crate::error::Result<()> {
         let Some(ref oauth) = oauth_ref else {
             return Ok(());
         };
@@ -113,16 +122,18 @@ impl OAuthManager {
                 Ok(())
             }
             "keyring" => {
-                let entry = keyring::Entry::new("kimi-cli-rs", key)
-                    .map_err(|e| crate::error::KimiCliError::Generic(format!("keyring error: {e}")))?;
-                entry
-                    .set_password(token.expose_secret())
-                    .map_err(|e| crate::error::KimiCliError::Generic(format!("keyring set failed: {e}")))?;
+                let entry = keyring::Entry::new("kimi-cli-rs", key).map_err(|e| {
+                    crate::error::KimiCliError::Generic(format!("keyring error: {e}"))
+                })?;
+                entry.set_password(token.expose_secret()).map_err(|e| {
+                    crate::error::KimiCliError::Generic(format!("keyring set failed: {e}"))
+                })?;
                 Ok(())
             }
-            _ => Err(crate::error::KimiCliError::Generic(
-                format!("unknown oauth storage '{}'", storage)
-            )),
+            _ => Err(crate::error::KimiCliError::Generic(format!(
+                "unknown oauth storage '{}'",
+                storage
+            ))),
         }
     }
 }
